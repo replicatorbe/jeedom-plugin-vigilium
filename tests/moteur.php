@@ -46,8 +46,11 @@ function configReference() {
 
 /* Rejoue des événements array(t, événement) et rend l'état final et toutes
  * les décisions, chacune datée. */
+/* La configuration passe par normaliserConfig() avant le moteur, comme dans
+ * vigilium::configMoteur() : les scénarios rejouent ainsi le chemin réel, où
+ * traiter() reçoit une configuration déjà normalisée. */
 function rejouer($_evenements, $_config = null, $_etat = null) {
-    $config = ($_config === null) ? configReference() : $_config;
+    $config = vigiliumMoteur::normaliserConfig(($_config === null) ? configReference() : $_config);
     $etat = ($_etat === null) ? vigiliumMoteur::etatInitial() : $_etat;
     $toutes = array();
     foreach ($_evenements as $ligne) {
@@ -312,6 +315,13 @@ scenario('Sabotage répété : une décision par épisode, close au repos', func
     verifier(genres($d) === array('info', 'sabotage', 'info', 'sabotage'), 'suite inattendue : ' . implode(',', genres($d)));
     list($etat, $d) = rejouer(array(array(100, capteur(6)), array(105, capteur(6))));
     verifier(genres($d) === array('defaut'), 'un seul défaut désarmé : ' . implode(',', genres($d)));
+});
+
+scenario('Configuration normalisée deux fois : les capteurs restent', function () {
+    $une = vigiliumMoteur::normaliserConfig(configReference());
+    verifier(vigiliumMoteur::normaliserConfig($une) === $une, 'normaliserConfig doit être idempotente');
+    list($etat, $d) = vigiliumMoteur::traiter(vigiliumMoteur::etatInitial(), $une, array('type' => 'muet', 'id' => 2, 'muet' => true), 10);
+    verifier(genres($d) === array('defaut'), 'le capteur doit être vu avec une configuration déjà normalisée');
 });
 
 scenario('Commande disparue : un défaut, puis un retour', function () {

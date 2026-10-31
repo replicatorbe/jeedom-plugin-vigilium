@@ -119,6 +119,13 @@ class vigiliumMoteur {
      */
     public static function normaliserConfig($_config) {
         $c = is_array($_config) ? $_config : array();
+        /* Déjà normalisée : la repasser écarterait tous les capteurs, que la
+         * première passe a réindexés par commande et privés de leur clé
+         * « cmd ». C'est le chemin réel — vigilium::configMoteur() normalise,
+         * puis traiter() — et il doit rester idempotent. */
+        if (!empty($c['normalisee'])) {
+            return $c;
+        }
         $borne = function ($_valeur, $_defaut, $_min, $_max) {
             if ($_valeur === null || $_valeur === '' || !is_numeric($_valeur)) {
                 return $_defaut;
@@ -131,6 +138,7 @@ class vigiliumMoteur {
             'fenetre' => $borne(isset($c['fenetre']) ? $c['fenetre'] : null, self::FENETRE_DEFAUT, 30, 3600),
             'repos_suspicion' => $borne(isset($c['repos_suspicion']) ? $c['repos_suspicion'] : null, self::REPOS_SUSPICION_DEFAUT, 0, 3600),
             'capteurs' => array(),
+            'normalisee' => true,
         );
         $capteurs = (isset($c['capteurs']) && is_array($c['capteurs'])) ? $c['capteurs'] : array();
         foreach ($capteurs as $capteur) {
