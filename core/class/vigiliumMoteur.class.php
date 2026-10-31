@@ -227,7 +227,14 @@ class vigiliumMoteur {
                 /* Le temps d'abord : un délai d'entrée échu entre deux
                  * battements du cron doit être constaté AVANT de classer ce
                  * capteur, sinon un couloir traversé après la fin du délai
-                 * passerait pour « suit le délai d'entrée ». */
+                 * passerait pour « suit le délai d'entrée ». Mais l'état du
+                 * capteur AVANT le temps : une porte refermée juste après la
+                 * fin du délai de sortie ne doit pas être vue encore ouverte
+                 * par la reprise de fin de sortie. */
+                $id = (int) $_evenement['id'];
+                if (isset($config['capteurs'][$id]) && empty($_evenement['alerte'])) {
+                    $etat['actifs'][$id] = false;
+                }
                 self::tick($etat, $config, $t, $decisions);
                 self::capteur($etat, $config, (int) $_evenement['id'], !empty($_evenement['alerte']), $t, $decisions);
                 break;
@@ -554,6 +561,9 @@ class vigiliumMoteur {
         /* L'alarme de la centrale alors que Vigilium ne la surveille pas —
          * désarmé : incendie, panique, désarmement sous contrainte. Elle ne
          * fait pas monter le niveau (rien n'est armé), mais elle s'écrit. */
+        if ($capteur['role'] === self::ROLE_CENTRALE && !$_alerte && !empty($_etat['defauts']['centrale-' . $_id])) {
+            self::defaut($_etat, 'centrale-' . $_id, false, $capteur['nom'] . ' : retour au repos', $_decisions, $_id);
+        }
         if ($capteur['role'] === self::ROLE_CENTRALE && !$actif) {
             self::defaut($_etat, 'centrale-' . $_id, $_alerte,
                 $_alerte ? 'Alarme de la centrale alors que l\'alarme n\'est pas armée (incendie, panique, contrainte ?) : ' . $capteur['nom']
@@ -602,9 +612,9 @@ class vigiliumMoteur {
                  * mouvement — le chat qui traverse toutes les minutes — une
                  * seule suspicion. Elle ne se renouvelle qu'après un silence
                  * aussi long que le repos. */
-                $silence = $_t - $_etat['derniere_detection_ext'];
+                $silence = ($_etat['derniere_detection_ext'] > 0) ? $_t - $_etat['derniere_detection_ext'] : PHP_INT_MAX;
                 $_etat['derniere_detection_ext'] = $_t;
-                if ($_etat['niveau'] === self::NIVEAU_SUSPICION && $silence < $_config['repos_suspicion']) {
+                if ($silence < $_config['repos_suspicion']) {
                     return;
                 }
                 $_etat['niveau'] = self::NIVEAU_SUSPICION;

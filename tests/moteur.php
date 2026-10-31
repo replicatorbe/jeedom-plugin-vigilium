@@ -386,6 +386,18 @@ scenario('Horloge revenue en arrière : le délai de sortie n\'est pas prolongé
     verifier($etat['niveau'] === 'alarme', 'alarme attendue, obtenu ' . $etat['niveau']);
 });
 
+scenario('Porte refermée juste après la fin du délai de sortie : rien', function () {
+    list($etat, $d) = rejouer(array(array(0, armer()), array(10, capteur(1)), array(62, capteur(1, false)), array(200, array('type' => 'tick'))));
+    verifier($etat['niveau'] === 'calme' && compter($d, 'alarme') === 0, 'aucune alarme attendue, obtenu ' . $etat['niveau']);
+});
+
+scenario('Repos des suspicions plus long que la fenêtre : respecté', function () {
+    $config = configReference();
+    $config['repos_suspicion'] = 1800;
+    list($etat, $d) = rejouer(array(array(0, armer()), array(500, capteur(4)), array(900, array('type' => 'tick')), array(1200, capteur(4)), array(2400, capteur(4))), $config);
+    verifier(compter($d, 'suspicion') === 1, 'une seule suspicion pendant 30 min de repos : ' . compter($d, 'suspicion'));
+});
+
 scenario('Commande disparue : un défaut, puis un retour', function () {
     list($etat, $d) = rejouer(array(
         array(0, array('type' => 'disparu', 'id' => 2, 'disparu' => true)),

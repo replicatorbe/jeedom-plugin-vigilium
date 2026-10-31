@@ -74,7 +74,8 @@ depuis laquelle il est en alerte quand elle est ancienne.
 commande introuvable — est rappelé en **sabotage** : « Armé malgré : … ».
 
 Passer d'un mode armé à l'autre (total vers nuit) **garde** l'incident en
-cours et ne relance pas le délai de sortie.
+cours et ne relance pas le délai de sortie. Un délai d'entrée en cours continue jusqu'à son terme,
+même si son capteur n'est pas surveillé dans le nouveau mode.
 
 ## Commandes
 

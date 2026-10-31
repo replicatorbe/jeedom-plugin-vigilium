@@ -368,6 +368,10 @@ function saveEqLogic(_eqLogic) {
     /* La page n'a pas fini de charger cet équipement : ses capteurs ne sont
        pas à l'écran, et les enregistrer maintenant les effacerait. */
     jeedomUtils.showAlert({ message: '{{La page n\'a pas fini de charger les capteurs : rechargez-la avant d\'enregistrer.}}', level: 'danger' })
+    /* Le cœur a déjà marqué la page « enregistrée » : sans cela, on pourrait
+       la quitter sans avertissement et perdre la saisie. */
+    if (typeof jeeFrontEnd !== 'undefined') { jeeFrontEnd.modifyWithoutSave = true }
+    window.modifyWithoutSave = true
     throw new Error('vigilium : capteurs non chargés')
   }
   _eqLogic.configuration.capteurs = vigiliumLireCapteurs()
