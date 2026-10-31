@@ -10,9 +10,10 @@ centrale : délais d'entrée et de sortie, exclusion des ouvertures restées
 ouvertes à l'armement, confirmation d'une intrusion par un second capteur
 indépendant, supervision des capteurs muets.
 
-**Version d'observation.** Cette première version ne déclenche aucune sortie :
-elle écrit au journal ce qu'elle aurait fait. Les sorties (sirènes,
-notifications, lumières) viendront une fois ce journal relu.
+Les réactions — notifications avec photos, lumières, sirènes, relances — se
+règlent par listes d'actions. Une alarme neuve est en **observation** : elle
+écrit au journal ce qu'elle aurait fait, sans rien exécuter, jusqu'à ce qu'on
+la passe en « Actif ».
 
 Documentation : [docs/fr_FR/index.md](docs/fr_FR/index.md).
 

@@ -20,6 +20,7 @@ require_once __DIR__ . '/../../../../core/php/core.inc.php';
 /* L'autoload du cœur ne connaît que la classe qui porte le nom du plugin : le
  * moteur se charge par elle, depuis le cron comme depuis l'écouteur. */
 require_once __DIR__ . '/vigiliumMoteur.class.php';
+require_once __DIR__ . '/vigiliumSorties.class.php';
 
 /*
  * Un équipement Vigilium = une alarme coordonnée : une centrale qui donne le
@@ -27,15 +28,23 @@ require_once __DIR__ . '/vigiliumMoteur.class.php';
  * BLU…) qui ont chacun un rôle.
  *
  * Ce fichier traduit Jeedom pour le moteur : les changements de commandes
- * deviennent des événements, les décisions du moteur deviennent un journal et
- * des commandes d'état. Il n'y a pas encore de sortie : le plugin OBSERVE. Il
- * écrit ce qu'il aurait fait, et c'est en relisant ce journal qu'on décidera
- * de lui confier les sirènes.
+ * deviennent des événements, les décisions du moteur deviennent un journal,
+ * des commandes d'état et des réactions (vigiliumSorties). Tant que l'alarme
+ * est en observation — le réglage par défaut —, les réactions ne sont
+ * qu'écrites au journal, telles qu'elles seraient parties.
  */
 class vigilium extends eqLogic {
 
     /* Taille au-delà de laquelle le journal est réduit à sa seconde moitié. */
     const JOURNAL_MAX_LIGNES = 5000;
+
+    /* Attente maximale du verrou d'exécution des réactions, en secondes. */
+    const EXECUTION_ATTENTE_MAX = 30;
+
+    /* Les alarmes dont CE processus tient déjà le verrou d'exécution : une
+     * réaction qui rappelle l'alarme (sa commande « Acquitter », un scénario
+     * synchrone) ne doit pas attendre un verrou qu'elle tient elle-même. */
+    private static $_executionTenue = array();
 
     /* ================================================================ CYCLE */
 
@@ -45,14 +54,22 @@ class vigilium extends eqLogic {
         /* Désactivée, l'alarme oublie son état : réactivée des heures plus
          * tard, un délai d'entrée laissé en cours lèverait sinon une alarme
          * au premier battement. */
-        if ($this->getIsEnable() != 1 && file_exists($this->fichierEtat())) {
-            @unlink($this->fichierEtat());
+        if ($this->getIsEnable() != 1) {
+            /* Désactivée en pleine alarme : ce qui a été allumé est coupé —
+             * personne ne jouerait plus jamais la fin d'incident. */
+            $this->finHorsMoteur(__('Alarme désactivée pendant un incident', __FILE__));
+            foreach (array($this->fichierEtat(), $this->fichierSorties()) as $fichier) {
+                if (file_exists($fichier)) {
+                    @unlink($fichier);
+                }
+            }
         }
     }
 
     public function preRemove() {
         $this->removeListener();
-        foreach (array($this->fichierEtat(), $this->fichierJournal(), $this->fichierVerrou()) as $fichier) {
+        $this->finHorsMoteur(__('Alarme supprimée pendant un incident', __FILE__));
+        foreach (array($this->fichierEtat(), $this->fichierJournal(), $this->fichierVerrou(), $this->fichierSorties(), $this->fichierVerrouExecution()) as $fichier) {
             if (file_exists($fichier)) {
                 @unlink($fichier);
             }
@@ -239,7 +256,7 @@ class vigilium extends eqLogic {
          * réarmerait l'alarme avec une valeur périmée. */
         $this->appliquer(function () {
             return $this->evenementsBattement();
-        });
+        }, true);
     }
 
     private function evenementsBattement() {
@@ -364,7 +381,7 @@ class vigilium extends eqLogic {
      * $_evenements : un tableau, ou une fonction qui le construit une fois le
      * verrou pris — pour ce qui doit être lu au même instant que l'état.
      */
-    public function appliquer($_evenements) {
+    public function appliquer($_evenements, $_battement = false) {
         $verrou = fopen($this->fichierVerrou(), 'c');
         if ($verrou === false) {
             throw new Exception(__('Verrou impossible à créer', __FILE__));
@@ -375,6 +392,7 @@ class vigilium extends eqLogic {
             }
             $evenements = is_callable($_evenements) ? call_user_func($_evenements) : $_evenements;
             $etat = $this->lireEtat();
+            $avant = $etat['niveau'];
             $config = $this->configMoteur();
             $maintenant = time();
             $toutes = array();
@@ -385,25 +403,141 @@ class vigilium extends eqLogic {
                 }
             }
             $this->ecrireEtat($etat);
+            /* Le plan des réactions est arrêté sous le même verrou, avec l'état
+             * des relances : deux processus ne programment pas deux fois la
+             * même relance. Les actions partent après lui, sous le verrou
+             * d'exécution (voir plus bas). */
+            $sorties = vigiliumSorties::nettoyer($this->getConfiguration('sorties', array()));
+            list($plan, $etatSorties) = vigiliumSorties::planifier($toutes, $avant, $etat['niveau'], $this->lireSorties(),
+                array('minutes' => $this->getConfiguration('relance_minutes', vigiliumSorties::RELANCE_MINUTES_DEFAUT),
+                      'max' => $this->getConfiguration('relance_max', vigiliumSorties::RELANCE_MAX_DEFAUT),
+                      'listes' => count($sorties['relance']) > 0),
+                $maintenant, $_battement);
+            $this->ecrireSorties($etatSorties);
+            /* Le verrou d'exécution est pris AVANT de rendre celui de l'état :
+             * les plans s'exécutent dans l'ordre où ils ont été arrêtés. Sans
+             * cela, un désarmement pourrait jouer « fin » — couper la sirène —
+             * pendant qu'une alarme antérieure prend encore ses photos, puis
+             * allumer la sirène après, et rien ne l'éteindrait plus. */
+            $execution = (count($plan) > 0) ? $this->prendreVerrouExecution() : null;
         } finally {
             flock($verrou, LOCK_UN);
             fclose($verrou);
         }
-        /* L'état d'abord, la décision ensuite : un scénario déclenché par
-         * « Dernier événement » doit lire le niveau qui va avec. */
-        $this->publier($etat, $config);
-        foreach ($toutes as $decision) {
-            $this->decider($decision);
+        try {
+            /* L'état d'abord, la décision ensuite : un scénario déclenché par
+             * « Dernier événement » doit lire le niveau qui va avec. */
+            $this->publier($etat, $config);
+            foreach ($toutes as $decision) {
+                try {
+                    $this->decider($decision);
+                } catch (Throwable $e) {
+                    log::add(__CLASS__, 'error', $this->getHumanName() . ' : ' . $e->getMessage());
+                }
+            }
+            $photosDuLot = null;
+            foreach ($plan as $entree) {
+                try {
+                    vigiliumSorties::executer($this, $entree, $etat, $config, $this->enObservation(), false, $photosDuLot);
+                } catch (Throwable $e) {
+                    log::add(__CLASS__, 'error', $this->getHumanName() . ' : ' . __('réactions', __FILE__) . ' ' . $entree['declencheur'] . ' — ' . $e->getMessage());
+                }
+            }
+        } finally {
+            $this->rendreVerrouExecution($execution);
         }
     }
 
     /*
-     * Une décision du moteur. En observation, la seule conséquence est le
-     * journal : ce qui y est marqué « aurait déclenché » est exactement ce que
-     * les sorties feront le jour où elles seront branchées.
+     * Le verrou d'exécution des réactions, réentrant pour le processus qui le
+     * tient, et attendu au plus EXECUTION_ATTENTE_MAX secondes : au-delà, les
+     * réactions partent quand même, avec un avertissement — une sirène en
+     * retard vaut mieux qu'une sirène qui attend une notification bloquée.
+     * Rend le descripteur à rendre, ou null s'il n'y a rien à rendre.
+     */
+    private function prendreVerrouExecution() {
+        $id = (int) $this->getId();
+        if (!empty(self::$_executionTenue[$id])) {
+            return null;
+        }
+        $verrou = @fopen($this->fichierVerrouExecution(), 'c');
+        if ($verrou === false) {
+            return null;
+        }
+        $limite = microtime(true) + self::EXECUTION_ATTENTE_MAX;
+        while (!flock($verrou, LOCK_EX | LOCK_NB)) {
+            if (microtime(true) > $limite) {
+                fclose($verrou);
+                log::add(__CLASS__, 'warning', $this->getHumanName() . ' : '
+                    . __('réactions précédentes encore en cours après 30 s : celles-ci partent sans attendre', __FILE__));
+                return null;
+            }
+            usleep(200000);
+        }
+        self::$_executionTenue[$id] = true;
+        return $verrou;
+    }
+
+    private function rendreVerrouExecution($_verrou) {
+        if ($_verrou === null) {
+            return;
+        }
+        unset(self::$_executionTenue[(int) $this->getId()]);
+        flock($_verrou, LOCK_UN);
+        fclose($_verrou);
+    }
+
+    /* La fin d'incident jouée hors du moteur — désactivation ou suppression de
+     * l'alarme pendant un incident —, sous le même verrou que les autres
+     * réactions : elle ne doit pas passer avant une alarme qui prend encore
+     * ses photos. */
+    private function finHorsMoteur($_detail) {
+        if (!file_exists($this->fichierEtat())) {
+            return;
+        }
+        $etat = $this->lireEtat();
+        if (!in_array($etat['niveau'], array(vigiliumMoteur::NIVEAU_ALARME, vigiliumMoteur::NIVEAU_CONFIRMEE), true)) {
+            return;
+        }
+        $verrou = $this->prendreVerrouExecution();
+        try {
+            vigiliumSorties::executer($this, array('declencheur' => 'fin', 'genre' => 'fin', 'capteur' => 0, 'detail' => $_detail),
+                $etat, $this->configMoteur(), $this->enObservation());
+        } catch (Throwable $e) {
+            log::add(__CLASS__, 'error', $this->getHumanName() . ' : ' . $e->getMessage());
+        } finally {
+            $this->rendreVerrouExecution($verrou);
+        }
+    }
+
+    /* L'observation est le réglage par défaut : une alarme fraîchement créée,
+     * ou dont le réglage a été perdu, n'agit pas avant qu'on le lui demande. */
+    public function enObservation() {
+        return $this->getConfiguration('execution', 'observation') !== 'actif';
+    }
+
+    /*
+     * Le bouton « Tester » d'une liste de réactions : les actions enregistrées,
+     * jouées POUR DE VRAI — c'est le seul moyen de vérifier une notification —
+     * avec un texte d'essai reconnaissable, sans toucher à l'état de l'alarme.
+     */
+    public function testerSorties($_declencheur) {
+        if (!in_array($_declencheur, vigiliumSorties::DECLENCHEURS, true)) {
+            throw new Exception(__('Déclencheur inconnu :', __FILE__) . ' ' . $_declencheur);
+        }
+        $entree = array('declencheur' => $_declencheur, 'genre' => $_declencheur, 'capteur' => 0,
+                        'detail' => '[' . __('Essai', __FILE__) . '] ' . __('essai des réactions', __FILE__) . ' « ' . $_declencheur . ' » ' . __('de', __FILE__) . ' ' . $this->getName());
+        return vigiliumSorties::executer($this, $entree, $this->lireEtat(), $this->configMoteur(), false, true);
+    }
+
+    /*
+     * Une décision du moteur : au journal, au log, et dans « Dernier
+     * événement ». Les réactions qu'elle entraîne sont jouées ensuite, par
+     * vigiliumSorties, ou seulement tracées en observation.
      */
     private function decider($_decision) {
         $genre = $_decision['genre'];
+        $observation = $this->enObservation();
         $agirait = in_array($genre, array(
             vigiliumMoteur::DECISION_SUSPICION, vigiliumMoteur::DECISION_ALARME,
             vigiliumMoteur::DECISION_CONFIRMEE, vigiliumMoteur::DECISION_SABOTAGE,
@@ -412,21 +546,15 @@ class vigilium extends eqLogic {
             'genre' => $genre,
             'detail' => $_decision['detail'],
             'capteur' => $_decision['capteur'],
-            'observation' => true,
+            'observation' => $observation,
         ));
-        $niveauLog = $agirait ? 'warning' : 'info';
-        log::add(__CLASS__, $niveauLog, $this->getHumanName() . ' : ' . $_decision['detail']
-            . ($agirait ? ' ' . __('(observation : aucune sortie déclenchée)', __FILE__) : ''));
+        log::add(__CLASS__, $agirait ? 'warning' : 'info', $this->getHumanName() . ' : ' . $_decision['detail']
+            . (($agirait && $observation) ? ' ' . __('(observation : aucune réaction exécutée)', __FILE__) : ''));
         $this->checkAndUpdateCmd('evenement', $_decision['detail']);
     }
 
     private function publier($_etat, $_config) {
-        $modes = array(
-            vigiliumMoteur::MODE_DESARME => __('Désarmé', __FILE__),
-            vigiliumMoteur::MODE_TOTAL => __('Total', __FILE__),
-            vigiliumMoteur::MODE_NUIT => __('Nuit', __FILE__),
-        );
-        $this->checkAndUpdateCmd('mode', isset($modes[$_etat['mode']]) ? $modes[$_etat['mode']] : $_etat['mode']);
+        $this->checkAndUpdateCmd('mode', self::libelleMode($_etat['mode']));
         $this->checkAndUpdateCmd('niveau', self::libelleNiveau($_etat['niveau']));
         $exclus = array();
         foreach (array_keys($_etat['exclus']) as $id) {
@@ -436,6 +564,15 @@ class vigilium extends eqLogic {
          * quand l'ancienne valeur est une chaîne vide, soit une fois par minute. */
         $this->checkAndUpdateCmd('exclus', count($exclus) > 0 ? implode(', ', $exclus) : __('aucun', __FILE__));
         $this->checkAndUpdateCmd('muets', count($_etat['muets']));
+    }
+
+    public static function libelleMode($_mode) {
+        $modes = array(
+            vigiliumMoteur::MODE_DESARME => __('Désarmé', __FILE__),
+            vigiliumMoteur::MODE_TOTAL => __('Total', __FILE__),
+            vigiliumMoteur::MODE_NUIT => __('Nuit', __FILE__),
+        );
+        return isset($modes[$_mode]) ? $modes[$_mode] : $_mode;
     }
 
     public static function libelleNiveau($_niveau) {
@@ -568,6 +705,32 @@ class vigilium extends eqLogic {
 
     public function fichierJournal() {
         return self::dossierDonnees() . '/journal-' . (int) $this->getId() . '.jsonl';
+    }
+
+    public function fichierSorties() {
+        return self::dossierDonnees() . '/sorties-' . (int) $this->getId() . '.json';
+    }
+
+    public function lireSorties() {
+        $fichier = $this->fichierSorties();
+        if (!file_exists($fichier)) {
+            return vigiliumSorties::etatInitial();
+        }
+        $etat = json_decode((string) file_get_contents($fichier), true);
+        return is_array($etat) ? array_merge(vigiliumSorties::etatInitial(), $etat) : vigiliumSorties::etatInitial();
+    }
+
+    private function ecrireSorties($_etat) {
+        $fichier = $this->fichierSorties();
+        $temporaire = $fichier . '.tmp';
+        $json = json_encode($_etat, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
+        if ($json === false || file_put_contents($temporaire, $json) === false || !rename($temporaire, $fichier)) {
+            log::add(__CLASS__, 'error', $this->getHumanName() . ' : ' . __('relances non enregistrées dans', __FILE__) . ' ' . $fichier);
+        }
+    }
+
+    public function fichierVerrouExecution() {
+        return self::dossierDonnees() . '/sorties-' . (int) $this->getId() . '.lock';
     }
 
     public function fichierVerrou() {

@@ -366,6 +366,7 @@ scenario('Centrale : jamais une confirmation, jamais exclue, signalée désarmé
     verifier(!isset($etat['exclus'][5]), 'la centrale n\'est jamais exclue');
     list($etat, $d) = rejouer(array(array(0, capteur(5)), array(5, capteur(5)), array(10, capteur(5, false))));
     verifier(genres($d) === array('alarme', 'info'), 'alarme centrale désarmé, une fois, puis retour : ' . implode(',', genres($d)));
+    verifier(!empty($d[1]['fin']), 'le retour au repos porte la marque « fin »');
 });
 
 scenario('Désarmement juste après la fin du délai : alarme annulée, et sans battement : rien', function () {

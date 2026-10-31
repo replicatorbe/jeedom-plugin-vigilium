@@ -33,8 +33,13 @@ var vigiliumGenres = {
   alarme: { texte: '{{Alarme}}', classe: 'label-danger' },
   confirmee: { texte: '{{Confirmée}}', classe: 'label-danger' },
   sabotage: { texte: '{{Sabotage}}', classe: 'label-danger' },
-  defaut: { texte: '{{Défaut}}', classe: 'label-warning' }
+  defaut: { texte: '{{Défaut}}', classe: 'label-warning' },
+  sortie: { texte: '{{Réaction}}', classe: 'label-primary' }
 }
+
+/* Blocs d'action qui n'ont pas de sens hors d'un scénario, ou qui
+   retiendraient l'écouteur : les mêmes que vigiliumSorties::BLOCS_REFUSES. */
+var vigiliumBlocsRefuses = ['wait', 'sleep', 'ask', 'report', 'exportHistory', 'stop', 'log', 'scenario_return', 'icon', 'tag']
 
 /* Vrai pendant que printEqLogic remplit la page : les champs qu'il pose ne
    sont pas des modifications de l'utilisateur. */
@@ -303,7 +308,7 @@ function vigiliumRenderJournal() {
   if (corps === null) { return }
   var filtre = document.getElementById('sel_vigiliumFiltreJournal')
   var choix = filtre !== null ? filtre.value : ''
-  var agir = ['suspicion', 'alarme', 'confirmee', 'sabotage']
+  var agir = ['suspicion', 'alarme', 'confirmee', 'sabotage', 'sortie']
   corps.innerHTML = ''
   var affichees = 0
   for (var i = 0; i < vigiliumJournal.length; i++) {
@@ -337,6 +342,133 @@ function vigiliumRenderJournal() {
   }
 }
 
+/* ================================================================ RÉACTIONS */
+
+/*
+ * Une ligne d'action, calquée sur le sélecteur d'action des scénarios. L'ordre
+ * html() → setJeeValues → appendChild → replaceWith est celui du cœur : le
+ * HTML des options contient des <script> que seul Element.prototype.html()
+ * exécute.
+ */
+function vigiliumAjouterAction(_declencheur, _action) {
+  var conteneur = document.querySelector('.vigiliumActions[data-declencheur="' + _declencheur + '"]')
+  if (conteneur === null) { return null }
+  var action = _action || {}
+  if (!isset(action.options)) { action.options = {} }
+
+  var div = '<div class="vigiliumAction expression" style="margin-bottom:4px;">'
+  div += '<input class="expressionAttr" data-l1key="type" style="display:none;" value="action">'
+  div += '<div class="form-group" style="margin:0;">'
+  div += '<div class="col-sm-1">'
+  div += '<input type="checkbox" class="expressionAttr" data-l1key="options" data-l2key="enable" checked title="{{Décocher pour désactiver cette action sans la supprimer}}">'
+  div += '<input type="checkbox" class="expressionAttr" data-l1key="options" data-l2key="background" title="{{Exécuter en parallèle des autres actions}}">'
+  div += '</div>'
+  div += '<div class="col-sm-5"><div class="input-group">'
+  div += '<span class="input-group-btn"><a class="btn btn-default btn-sm vigiliumRetirerAction roundedLeft" title="{{Retirer cette action}}"><i class="fas fa-minus-circle"></i></a></span>'
+  div += '<input class="expressionAttr form-control input-sm cmdAction" data-l1key="cmd" placeholder="{{Commande à déclencher}}">'
+  div += '<span class="input-group-btn">'
+  div += '<a class="btn btn-default btn-sm vigiliumChoisirBloc" title="{{Choisir un bloc (message, scénario, variable...)}}"><i class="fas fa-tasks"></i></a>'
+  div += '<a class="btn btn-default btn-sm vigiliumChoisirAction roundedRight" title="{{Choisir une commande}}"><i class="fas fa-list-alt"></i></a>'
+  div += '</span></div></div>'
+  div += '<div class="col-sm-6 actionOptions"></div>'
+  div += '</div></div>'
+
+  var enveloppe = document.createElement('div')
+  enveloppe.html(div)
+  enveloppe.setJeeValues(action, '.expressionAttr')
+  conteneur.appendChild(enveloppe)
+  var noeuds = Array.prototype.slice.call(enveloppe.childNodes)
+  enveloppe.replaceWith(...noeuds)
+  if (noeuds.length > 0) {
+    vigiliumRafraichirOptions(noeuds[0], init(action.cmd, ''), action.options)
+  }
+  return noeuds[0]
+}
+
+/* Réaffiche les options — titre, message — d'après la commande visée. C'est
+   le cœur qui les dessine. Tant que sa réponse n'est pas arrivée, les options
+   connues restent sur la ligne : sinon l'enregistrement remplacerait par du
+   vide un message rédigé de longue date. */
+function vigiliumRafraichirOptions(_ligne, _expression, _options) {
+  var expression = String(init(_expression, ''))
+  if (_ligne.vigiliumExpression === expression) { return }
+  _ligne.vigiliumExpression = expression
+  _ligne.vigiliumEnAttente = _options || {}
+  jeedom.cmd.displayActionOption(expression, _options, function (html) {
+    var cible = _ligne.querySelector('.actionOptions')
+    if (cible === null) { return }
+    if (html === 'Unsupported') {
+      cible.textContent = '{{Ce bloc n\'est utilisable que dans un scénario.}}'
+      return
+    }
+    /* Une commande sans option (un bouton « Sirène ON ») n'a rien à
+       afficher : le cœur rend alors une chaîne vide. Une commande supprimée
+       aussi : les options connues restent donc en attente, pour ne pas
+       remplacer à l'enregistrement un message par du vide. */
+    cible.html(html)
+    jeedomUtils.taAutosize()
+    if (html !== '') { _ligne.vigiliumEnAttente = null }
+  })
+}
+
+function vigiliumLireSorties() {
+  var sorties = {}
+  document.querySelectorAll('.vigiliumActions').forEach(function (conteneur) {
+    var liste = []
+    conteneur.querySelectorAll('.vigiliumAction').forEach(function (ligne) {
+      var action = ligne.getJeeValues('.expressionAttr')[0]
+      if (isset(ligne.vigiliumEnAttente) && ligne.vigiliumEnAttente !== null) {
+        action.options = Object.assign({}, ligne.vigiliumEnAttente, action.options)
+      }
+      liste.push(action)
+    })
+    sorties[conteneur.getAttribute('data-declencheur')] = liste
+  })
+  return sorties
+}
+
+/* Une caméra pour les photos : sa commande de capture et celle du chemin. */
+function vigiliumAjouterPhoto(_camera) {
+  var camera = _camera || {}
+  var tr = document.createElement('tr')
+  tr.classList.add('vigiliumPhoto')
+  var champ = function (_classe, _type) {
+    return '<td><div class="input-group">'
+      + '<input class="form-control input-sm roundedLeft ' + _classe + '" readonly>'
+      + '<span class="input-group-btn"><a class="btn btn-default btn-sm roundedRight vigiliumChoisirPhoto" data-cible="' + _classe + '" data-type="' + _type + '"><i class="fas fa-list-alt"></i></a></span>'
+      + '</div></td>'
+  }
+  tr.innerHTML = champ('vigiliumCapture', 'action') + champ('vigiliumFichier', 'info')
+    + '<td><a class="btn btn-danger btn-xs vigiliumRetirerPhoto" title="{{Retirer cette caméra}}"><i class="fas fa-minus-circle"></i></a></td>'
+  document.getElementById('table_vigiliumPhotos').querySelector('tbody').appendChild(tr)
+  vigiliumAfficherNomCommande(tr.querySelector('.vigiliumCapture'), init(camera.capture, 0))
+  vigiliumAfficherNomCommande(tr.querySelector('.vigiliumFichier'), init(camera.fichier, 0))
+}
+
+function vigiliumLirePhotos() {
+  var cameras = []
+  document.querySelectorAll('#table_vigiliumPhotos tbody tr.vigiliumPhoto').forEach(function (tr) {
+    var capture = parseInt(tr.querySelector('.vigiliumCapture').getAttribute('data-cmd'), 10)
+    var fichier = parseInt(tr.querySelector('.vigiliumFichier').getAttribute('data-cmd'), 10)
+    if (isNaN(fichier) || fichier <= 0) { return }
+    cameras.push({ capture: (isNaN(capture) || capture <= 0) ? 0 : capture, fichier: fichier })
+  })
+  return cameras
+}
+
+/* Le bandeau dit, à l'endroit où l'on règle les réactions, si elles partent
+   pour de vrai. */
+function vigiliumAfficherExecution() {
+  var bandeau = document.getElementById('div_vigiliumBandeauExecution')
+  var choix = document.getElementById('sel_vigiliumExecution')
+  if (bandeau === null || choix === null) { return }
+  if (choix.value === 'actif') {
+    bandeau.innerHTML = '<div class="alert alert-danger"><i class="fas fa-bolt"></i> <b>{{Actif}}</b> {{: les réactions ci-dessous sont exécutées pour de vrai à chaque décision.}}</div>'
+  } else {
+    bandeau.innerHTML = '<div class="alert alert-info"><i class="fas fa-eye"></i> <b>{{Observation}}</b> {{: les réactions sont seulement écrites au journal (« Aurait exécuté… »). Le bouton « Tester » les joue pour de vrai.}}</div>'
+  }
+}
+
 /* ========================================================= CYCLE DU CŒUR */
 
 function printEqLogic(_eqLogic) {
@@ -350,6 +482,19 @@ function printEqLogic(_eqLogic) {
     for (var i = 0; i < capteurs.length; i++) {
       vigiliumAjouterLigneCapteur(capteurs[i])
     }
+    document.querySelectorAll('.vigiliumActions').forEach(function (conteneur) { conteneur.innerHTML = '' })
+    var sorties = (isset(configuration.sorties) && typeof configuration.sorties === 'object' && configuration.sorties !== null) ? configuration.sorties : {}
+    Object.keys(sorties).forEach(function (declencheur) {
+      if (Array.isArray(sorties[declencheur])) {
+        sorties[declencheur].forEach(function (action) { vigiliumAjouterAction(declencheur, action) })
+      }
+    })
+    document.getElementById('table_vigiliumPhotos').querySelector('tbody').innerHTML = ''
+    ;(Array.isArray(configuration.photos) ? configuration.photos : []).forEach(function (camera) { vigiliumAjouterPhoto(camera) })
+    /* Une alarme enregistrée avant l'existence du réglage est en observation. */
+    var execution = document.getElementById('sel_vigiliumExecution')
+    if (execution !== null && execution.value === '') { execution.value = 'observation' }
+    vigiliumAfficherExecution()
     vigiliumJournal = []
     vigiliumRenderJournal()
     vigiliumChargePour = String(init(_eqLogic.id, ''))
@@ -375,6 +520,9 @@ function saveEqLogic(_eqLogic) {
     throw new Error('vigilium : capteurs non chargés')
   }
   _eqLogic.configuration.capteurs = vigiliumLireCapteurs()
+  _eqLogic.configuration.sorties = vigiliumLireSorties()
+  _eqLogic.configuration.photos = vigiliumLirePhotos()
+  if (String(init(_eqLogic.configuration.execution, '')) === '') { _eqLogic.configuration.execution = 'observation' }
   return _eqLogic
 }
 
@@ -459,6 +607,89 @@ vigiliumContainer.addEventListener('click', function (event) {
     return
   }
 
+  if (cible = event.target.closest('.vigiliumAjouterAction')) {
+    vigiliumAjouterAction(cible.getAttribute('data-declencheur'), null)
+    vigiliumMarkModified()
+    return
+  }
+
+  if (cible = event.target.closest('.vigiliumRetirerAction')) {
+    cible.closest('.vigiliumAction').remove()
+    vigiliumMarkModified()
+    return
+  }
+
+  if (cible = event.target.closest('.vigiliumChoisirAction')) {
+    var ligneAction = cible.closest('.vigiliumAction')
+    /* Le sélecteur rend #[Objet][Équipement][Commande]# : le cœur le convertit
+       en identifiant à l'enregistrement, un renommage ne casse donc rien. */
+    jeedom.cmd.getSelectModal({ cmd: { type: 'action' } }, function (result) {
+      ligneAction.querySelector('.expressionAttr[data-l1key="cmd"]').jeeValue(result.human)
+      vigiliumRafraichirOptions(ligneAction, result.human, '')
+      vigiliumMarkModified()
+    })
+    return
+  }
+
+  if (cible = event.target.closest('.vigiliumChoisirBloc')) {
+    var ligneBloc = cible.closest('.vigiliumAction')
+    jeedom.getSelectActionModal({}, function (result) {
+      if (vigiliumBlocsRefuses.indexOf(result.human) !== -1) {
+        jeedomUtils.showAlert({ message: '{{Ce bloc n\'est pas utilisable ici : il retiendrait l\'alarme ou n\'a de sens que dans un scénario. Passez par l\'action « Scénario ».}}', level: 'warning', ttl: 10000 })
+        return
+      }
+      ligneBloc.querySelector('.expressionAttr[data-l1key="cmd"]').jeeValue(result.human)
+      vigiliumRafraichirOptions(ligneBloc, result.human, '')
+      vigiliumMarkModified()
+    })
+    return
+  }
+
+  if (cible = event.target.closest('#bt_vigiliumAjouterPhoto')) {
+    vigiliumAjouterPhoto(null)
+    vigiliumMarkModified()
+    return
+  }
+
+  if (cible = event.target.closest('.vigiliumRetirerPhoto')) {
+    cible.closest('tr').remove()
+    vigiliumMarkModified()
+    return
+  }
+
+  if (cible = event.target.closest('.vigiliumChoisirPhoto')) {
+    var champPhoto = cible.closest('tr').querySelector('.' + cible.getAttribute('data-cible'))
+    jeedom.cmd.getSelectModal({ cmd: { type: cible.getAttribute('data-type') } }, function (result) {
+      if (!isset(result) || !isset(result.cmd) || !isset(result.cmd.id)) { return }
+      vigiliumAfficherNomCommande(champPhoto, result.cmd.id)
+      vigiliumMarkModified()
+    })
+    return
+  }
+
+  if (cible = event.target.closest('.vigiliumTesterSorties')) {
+    var idTest = vigiliumCurrentId()
+    if (idTest === '') { return }
+    if ((typeof jeeFrontEnd !== 'undefined' && jeeFrontEnd.modifyWithoutSave) || window.modifyWithoutSave) {
+      jeedomUtils.showAlert({ message: '{{Sauvegardez d\'abord : le test joue les réactions enregistrées.}}', level: 'warning' })
+      return
+    }
+    var declencheur = cible.getAttribute('data-declencheur')
+    jeeDialog.confirm('{{Jouer pour de vrai les réactions}} « ' + declencheur + ' » ? {{Notifications, lumières et sirènes partiront, avec un texte d\'essai.}}', function (ok) {
+      if (!ok) { return }
+      vigiliumAjax('tester', { id: idTest, declencheur: declencheur }, function (resultat) {
+        if (resultat.nombre === 0) {
+          jeedomUtils.showAlert({ message: '{{Aucune réaction enregistrée pour ce déclencheur.}}', level: 'warning' })
+        } else if (resultat.echecs.length > 0) {
+          jeedomUtils.showAlert({ message: '{{Échec :}} ' + resultat.echecs.join(' ; '), level: 'danger', ttl: 15000 })
+        } else {
+          jeedomUtils.showAlert({ message: resultat.nombre + ' {{action(s) jouée(s).}}', level: 'success' })
+        }
+      })
+    })
+    return
+  }
+
   if (cible = event.target.closest('.vigiliumViderEnLigne')) {
     vigiliumAfficherNomCommande(cible.closest('tr').querySelector('.vigiliumEnLigne'), 0)
     vigiliumMarkModified()
@@ -485,7 +716,26 @@ vigiliumContainer.addEventListener('change', function (event) {
     vigiliumRenderJournal()
     return
   }
-  if (event.target.closest('#table_vigiliumCapteurs')) { vigiliumMarkModified() }
+  if (event.target.closest('#sel_vigiliumExecution')) {
+    vigiliumAfficherExecution()
+    return
+  }
+  /* Capteurs et réactions ne sont pas des .eqLogicAttr : le cœur ne les voit
+     pas changer, et quitterait la page sans prévenir. */
+  if (event.target.closest('#table_vigiliumCapteurs') || event.target.closest('.vigiliumAction')) { vigiliumMarkModified() }
+})
+
+/* Une commande tapée ou collée à la main : ses options sont redessinées quand
+   on quitte le champ. */
+vigiliumContainer.addEventListener('focusout', function (event) {
+  var champ = event.target.closest('.vigiliumAction .cmdAction')
+  if (champ === null) { return }
+  var ligne = champ.closest('.vigiliumAction')
+  var actuelle = ligne.getJeeValues('.expressionAttr')[0]
+  /* Les options encore en attente d'un premier rendu comptent : sans elles,
+     le message pas encore dessiné serait remplacé par du vide. */
+  var enAttente = (isset(ligne.vigiliumEnAttente) && ligne.vigiliumEnAttente !== null) ? ligne.vigiliumEnAttente : {}
+  vigiliumRafraichirOptions(ligne, champ.jeeValue(), Object.assign({}, enAttente, init(actuelle.options, {})))
 })
 
 /* La valeur d'alerte change : le verdict « en alerte / au repos » de la ligne

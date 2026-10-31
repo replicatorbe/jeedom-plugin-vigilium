@@ -27,8 +27,7 @@ $eqLogics = eqLogic::byType($plugin->getId());
 <div class="row row-overflow">
     <div class="col-xs-12">
         <div class="alert alert-info" style="margin:5px;">
-            <i class="fas fa-eye"></i> <b>{{Version d'observation : aucune sortie n'est déclenchée.}}</b>
-            {{L'alarme suit la centrale, évalue chaque capteur et écrit au journal ce qu'elle aurait fait — suspicion, alarme, alarme confirmée, sabotage. Les sirènes, notifications et lumières viendront quand ce journal aura montré qu'on peut lui faire confiance.}}
+            <i class="fas fa-eye"></i> {{Une alarme neuve est en}} <b>{{observation}}</b> {{: elle suit la centrale, évalue chaque capteur et écrit au journal ce qu'elle aurait fait, réactions comprises, sans rien exécuter. Elle n'agit qu'une fois passée en « Actif » dans son onglet Réactions.}}
         </div>
     </div>
 
@@ -80,6 +79,7 @@ $eqLogics = eqLogic::byType($plugin->getId());
             <li role="presentation"><a href="#" class="eqLogicAction" aria-controls="home" role="tab" data-toggle="tab" data-action="returnToThumbnailDisplay"><i class="fas fa-arrow-circle-left"></i></a></li>
             <li role="presentation" class="active"><a href="#eqlogictab" aria-controls="home" role="tab" data-toggle="tab"><i class="fas fa-tachometer-alt"></i> {{Alarme}}</a></li>
             <li role="presentation"><a href="#capteurstab" aria-controls="profile" role="tab" data-toggle="tab"><i class="fas fa-satellite-dish"></i> {{Capteurs}}</a></li>
+            <li role="presentation"><a href="#reactionstab" aria-controls="profile" role="tab" data-toggle="tab"><i class="fas fa-bullhorn"></i> {{Réactions}}</a></li>
             <li role="presentation"><a href="#journaltab" aria-controls="profile" role="tab" data-toggle="tab" id="bt_vigiliumOngletJournal"><i class="fas fa-list"></i> {{Journal}}</a></li>
             <li role="presentation"><a href="#commandtab" aria-controls="profile" role="tab" data-toggle="tab"><i class="fas fa-list-alt"></i> {{Commandes}}</a></li>
         </ul>
@@ -233,12 +233,76 @@ $eqLogics = eqLogic::byType($plugin->getId());
                 </div>
             </div>
 
+            <div role="tabpanel" class="tab-pane" id="reactionstab">
+                <div id="div_vigiliumBandeauExecution" style="margin-top:10px;"></div>
+                <form class="form-horizontal">
+                    <fieldset>
+                        <legend><i class="fas fa-power-off"></i> {{Exécution}}</legend>
+                        <div class="form-group">
+                            <label class="col-sm-3 control-label">{{Réactions}}</label>
+                            <div class="col-sm-4">
+                                <select class="eqLogicAttr form-control" data-l1key="configuration" data-l2key="execution" id="sel_vigiliumExecution">
+                                    <option value="observation">{{Observation — écrites au journal, rien n'est exécuté}}</option>
+                                    <option value="actif">{{Actif — les réactions sont exécutées}}</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label class="col-sm-3 control-label">{{Relances}}
+                                <sup><i class="fas fa-question-circle tooltips" title="{{Tant que l'alarme n'est ni désarmée ni acquittée, la liste « Relance » est rejouée à cet intervalle, au plus ce nombre de fois. Sans action dans « Relance », pas de relance.}}"></i></sup>
+                            </label>
+                            <div class="col-sm-2"><div class="input-group">
+                                <span class="input-group-addon roundedLeft">{{toutes les}}</span>
+                                <input type="number" min="0" class="eqLogicAttr form-control" data-l1key="configuration" data-l2key="relance_minutes" placeholder="5">
+                                <span class="input-group-addon roundedRight">{{min}}</span>
+                            </div></div>
+                            <div class="col-sm-2"><div class="input-group">
+                                <span class="input-group-addon roundedLeft">{{au plus}}</span>
+                                <input type="number" min="0" class="eqLogicAttr form-control" data-l1key="configuration" data-l2key="relance_max" placeholder="3">
+                                <span class="input-group-addon roundedRight">{{fois}}</span>
+                            </div></div>
+                        </div>
+                    </fieldset>
+                </form>
+
+                <legend><i class="fas fa-camera"></i> {{Photos}}
+                    <a class="btn btn-success btn-xs pull-right" id="bt_vigiliumAjouterPhoto"><i class="fas fa-plus-circle"></i> {{Ajouter une caméra}}</a>
+                </legend>
+                <div class="help-block">{{Avant les réactions de suspicion, d'alarme et d'alarme confirmée, chaque caméra est photographiée (commande de capture), puis le chemin de l'image est lu (commande d'information). Les jetons #photo# (la première) et #photos# (toutes, séparées par des virgules) les reprennent dans les messages — par exemple « files=#photo# » dans le titre d'une notification JeedomConnect. En observation, aucune photo n'est prise.}}</div>
+                <table class="table table-condensed" id="table_vigiliumPhotos">
+                    <thead><tr><th>{{Commande de capture (action)}}</th><th>{{Chemin de l'image (information)}}</th><th style="width:40px;"></th></tr></thead>
+                    <tbody></tbody>
+                </table>
+
+                <div class="help-block">
+                    {{Jetons utilisables dans les titres et messages :}} <code>#detail#</code> {{(la décision en clair)}}, <code>#niveau#</code>, <code>#mode#</code>, <code>#capteur#</code>, <code>#alarme#</code> {{(le nom de cette alarme)}}, <code>#declencheur#</code>, <code>#photo#</code>, <code>#photos#</code>.
+                </div>
+                <?php
+                foreach (array(
+                    'suspicion' => array('fa-eye', __('Suspicion', __FILE__), __('Une caméra a vu quelqu\'un, alarme armée, sans autre détection. Typiquement : notification avec photo, projecteurs.', __FILE__)),
+                    'alarme' => array('fa-bell', __('Alarme', __FILE__), __('Un capteur a déclenché. Typiquement : notification critique avec photos, toutes les lumières, sirènes.', __FILE__)),
+                    'confirmee' => array('fa-exclamation-triangle', __('Alarme confirmée', __FILE__), __('Un second capteur, différent, a confirmé l\'alarme. Typiquement : prévenir un tiers, sirène extérieure.', __FILE__)),
+                    'relance' => array('fa-redo', __('Relance', __FILE__), __('Rejouée à intervalle tant que l\'alarme court. Typiquement : la notification critique.', __FILE__)),
+                    'fin' => array('fa-check-circle', __('Fin d\'incident', __FILE__), __('L\'alarme se termine (désarmement, acquittement). Typiquement : éteindre ce qui a été allumé, couper les sirènes.', __FILE__)),
+                    'sabotage' => array('fa-user-secret', __('Sabotage', __FILE__), __('Autoprotection, brouillage, caméra masquée ou capteur muet, alarme armée.', __FILE__)),
+                    'defaut' => array('fa-wrench', __('Défaut', __FILE__), __('Ce qui empêche l\'alarme de bien voir : capteur muet désarmé, commande introuvable, mode illisible.', __FILE__)),
+                ) as $vigiliumCle => $vigiliumDef) {
+                    echo '<legend><i class="fas ' . $vigiliumDef[0] . '"></i> ' . $vigiliumDef[1];
+                    echo ' <a class="btn btn-default btn-xs pull-right vigiliumTesterSorties" data-declencheur="' . $vigiliumCle . '" style="margin-left:5px;"><i class="fas fa-vial"></i> {{Tester}}</a>';
+                    echo ' <a class="btn btn-success btn-xs pull-right vigiliumAjouterAction" data-declencheur="' . $vigiliumCle . '"><i class="fas fa-plus-circle"></i> {{Ajouter une action}}</a>';
+                    echo '</legend>';
+                    echo '<div class="help-block">' . $vigiliumDef[2] . '</div>';
+                    echo '<form class="form-horizontal"><div class="vigiliumActions" data-declencheur="' . $vigiliumCle . '"></div></form>';
+                }
+                ?>
+            </div>
+
             <div role="tabpanel" class="tab-pane" id="journaltab">
                 <div style="margin:10px 0;">
                     <a class="btn btn-default btn-sm" id="bt_vigiliumRafraichirJournal"><i class="fas fa-sync"></i> {{Rafraîchir}}</a>
                     <select class="form-control input-sm" id="sel_vigiliumFiltreJournal" style="display:inline-block;width:auto;margin-left:5px;">
                         <option value="">{{Tout}}</option>
-                        <option value="agir">{{Ce qui aurait agi (suspicion, alarme, sabotage)}}</option>
+                        <option value="agir">{{Ce qui agit (suspicion, alarme, sabotage, réactions)}}</option>
                         <option value="defaut">{{Défauts}}</option>
                         <option value="info">{{Informations}}</option>
                     </select>

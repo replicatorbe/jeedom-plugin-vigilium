@@ -59,6 +59,13 @@ try {
         ajax::success($valeurs);
     }
 
+    /* Joue POUR DE VRAI les réactions enregistrées d'un déclencheur, avec un
+     * texte d'essai. La page demande confirmation avant. */
+    if (init('action') == 'tester') {
+        $eqLogic = $getEqLogic(init('id'));
+        ajax::success($eqLogic->testerSorties((string) init('declencheur')));
+    }
+
     throw new Exception(__('Aucune méthode correspondante à :', __FILE__) . ' ' . init('action'));
 } catch (Throwable $e) {
     ajax::error(displayException($e), $e->getCode());

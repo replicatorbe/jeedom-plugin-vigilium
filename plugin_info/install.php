@@ -54,7 +54,7 @@ function vigilium_remove() {
     try {
         $dossier = vigilium::dossierDonnees();
         foreach (ls($dossier, '*', false, array('files', 'quiet')) as $fichier) {
-            if (preg_match('/^(?:journal|etat)-\d+\./', $fichier)) {
+            if (preg_match('/^(?:journal|etat|sorties)-\d+\./', $fichier)) {
                 @unlink($dossier . '/' . $fichier);
             }
         }

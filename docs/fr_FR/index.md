@@ -5,9 +5,9 @@ une centrale existante donne le mode d'armement, et chaque capteur — contact
 de la centrale, caméra, capteur Bluetooth — reçoit un rôle qui dit comment il
 doit réagir.
 
-> **Version d'observation.** Aucune sortie n'est déclenchée. Le journal dit ce
-> que l'alarme aurait fait ; c'est en le relisant pendant quelques semaines
-> qu'on décide de lui confier sirènes et notifications.
+> **Observation par défaut.** Une alarme neuve n'exécute rien : le journal dit
+> ce qu'elle aurait fait, réactions comprises. On la passe en « Actif » dans
+> l'onglet Réactions une fois ce journal relu.
 
 ## Principe
 
@@ -76,6 +76,54 @@ commande introuvable — est rappelé en **sabotage** : « Armé malgré : … �
 Passer d'un mode armé à l'autre (total vers nuit) **garde** l'incident en
 cours et ne relance pas le délai de sortie. Un délai d'entrée en cours continue jusqu'à son terme,
 même si son capteur n'est pas surveillé dans le nouveau mode.
+
+## Réactions
+
+L'onglet **Réactions** dit ce que l'alarme fait de ses décisions : une liste
+d'actions par déclencheur, avec le même sélecteur que les scénarios (une
+commande, ou un bloc : message, scénario, variable…).
+
+| Déclencheur | Quand |
+|---|---|
+| Suspicion | Une caméra a vu quelqu'un, alarme armée, sans autre détection. |
+| Alarme | Un capteur a déclenché (ou la centrale, même désarmée : incendie, panique, contrainte). |
+| Alarme confirmée | Un second capteur, différent, a confirmé l'alarme. |
+| Relance | Rejouée toutes les N minutes, au plus M fois, tant que l'alarme n'est ni désarmée ni acquittée. |
+| Fin d'incident | L'alarme se termine : désarmement, acquittement, retour au repos d'une alarme de centrale reçue désarmée, ou désactivation de l'alarme pendant un incident. |
+| Sabotage | Autoprotection, brouillage, caméra masquée, capteur muet, alarme armée ; « Armé malgré ». |
+| Défaut | Capteur muet désarmé, commande introuvable, mode illisible. |
+
+**Exécution** : « Observation » (par défaut) écrit chaque action au journal,
+« Aurait exécuté (alarme) : … », sans rien exécuter, pas même une photo.
+« Actif » exécute. Le bouton **Tester** d'une liste la joue pour de vrai,
+après confirmation, avec un texte d'essai, sans toucher à l'état de l'alarme.
+
+**Photos** : avant les réactions de suspicion, d'alarme et d'alarme
+confirmée **qui citent `#photo#` ou `#photos#`**, chaque caméra réglée est
+photographiée (commande de capture), puis le chemin de l'image est lu
+(commande d'information) — pour une caméra du plugin dahua : « Capturer une
+image » et « Fichier de l'image ». Les captures sont bornées à 20 secondes
+au total : au-delà, la dernière image connue des caméras restantes sert.
+Une alarme et sa confirmation dans le même événement partagent les photos.
+
+Les réactions s'exécutent dans l'ordre où elles ont été décidées : une fin
+d'incident ne peut pas passer avant l'alarme qu'elle termine.
+
+La confirmation d'une alarme déjà relancée ne remet pas le compteur de
+relances à zéro. Passer de « Actif » à « Observation » pendant une alarme
+laisse en place ce qui a été déclenché : la fin d'incident n'est alors plus
+qu'écrite au journal.
+
+**Jetons** dans les titres et messages : `#detail#` (la décision en clair),
+`#niveau#`, `#mode#`, `#capteur#`, `#alarme#`, `#declencheur#`, `#photo#`
+(la première image), `#photos#` (toutes, séparées par des virgules). Pour une
+notification JeedomConnect avec image : `title=Intrusion | files=#photo#`.
+
+Une action en échec n'empêche pas les suivantes ; l'échec d'une commande est
+écrit au journal et au log. L'échec d'un bloc (message, scénario, variable)
+ou d'une action en tâche de fond est rattrapé par Jeedom lui-même et n'apparaît
+que dans son log « scenario ». Les blocs qui attendent (pause, attente, question) sont
+refusés : ils retiendraient l'alarme.
 
 ## Commandes
 

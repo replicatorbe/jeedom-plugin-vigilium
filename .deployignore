@@ -11,3 +11,5 @@ data/etat-*.json
 data/etat-*.lock
 data/*.tmp
 data/journal-*.jsonl
+data/sorties-*.json
+data/sorties-*.lock

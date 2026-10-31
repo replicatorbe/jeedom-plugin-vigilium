@@ -1,5 +1,18 @@
 # Changelog Vigilium
 
+## 0.3 — réactions
+
+- Onglet Réactions : une liste d'actions par déclencheur (suspicion, alarme,
+  alarme confirmée, relance, fin d'incident, sabotage, défaut), avec le
+  sélecteur d'action des scénarios et des jetons (#detail#, #photo#…).
+- Mode d'exécution par alarme : observation (par défaut, tout est écrit au
+  journal sans rien exécuter) ou actif.
+- Photos des caméras prises avant les réactions de suspicion et d'alarme.
+- Relances tant que l'alarme n'est ni désarmée ni acquittée ; réactions de fin
+  au retour au calme.
+- Bouton « Tester » par liste, qui joue les réactions pour de vrai après
+  confirmation.
+
 ## 0.2 — corrections de la campagne d'observation
 
 - Passer de total à nuit garde l'incident en cours et n'exclut plus le capteur

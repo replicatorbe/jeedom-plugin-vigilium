@@ -561,8 +561,12 @@ class vigiliumMoteur {
         /* L'alarme de la centrale alors que Vigilium ne la surveille pas —
          * désarmé : incendie, panique, désarmement sous contrainte. Elle ne
          * fait pas monter le niveau (rien n'est armé), mais elle s'écrit. */
+        /* Son retour au repos porte la marque « fin » : les réactions de fin
+         * d'incident doivent couper ce que cette alarme a déclenché, alors que
+         * le niveau, lui, n'a jamais quitté le calme. */
         if ($capteur['role'] === self::ROLE_CENTRALE && !$_alerte && !empty($_etat['defauts']['centrale-' . $_id])) {
             self::defaut($_etat, 'centrale-' . $_id, false, $capteur['nom'] . ' : retour au repos', $_decisions, $_id);
+            $_decisions[count($_decisions) - 1]['fin'] = true;
         }
         if ($capteur['role'] === self::ROLE_CENTRALE && !$actif) {
             self::defaut($_etat, 'centrale-' . $_id, $_alerte,
