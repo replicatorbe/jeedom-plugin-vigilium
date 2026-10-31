@@ -1,0 +1,13 @@
+# Exclusions propres au plugin vigilium, ajoutées à celles de deploy-plugin.sh.
+
+# Le jeu d'essai n'existe que pour le développement.
+tests/
+.gitattributes
+
+# L'état de l'alarme et son journal sont produits côté Jeedom : sans ces
+# exclusions, le --delete du déploiement effacerait une campagne
+# d'observation et l'incident en cours.
+data/etat-*.json
+data/etat-*.lock
+data/*.tmp
+data/journal-*.jsonl

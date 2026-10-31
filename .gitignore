@@ -1,0 +1,25 @@
+# Fichiers propres à l'installation, jamais versionnés
+core/config/common.config.php
+
+# Contenu produit à l'exécution (journaux des équipements, attentes, verrous) :
+# seul le .htaccess qui en interdit l'accès web est versionné.
+data/*
+!data/.htaccess
+
+# Journaux et fichiers de processus
+*.log
+*.pid
+
+# Environnements de développement
+.vscode/
+.project
+.remote-sync.json
+sftp-config.json
+nbproject/
+node_modules/
+test.php
+
+# Systèmes de fichiers
+.DS_Store
+Thumbs.db
+*.php~

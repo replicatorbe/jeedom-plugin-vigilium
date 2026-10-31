@@ -1,0 +1,49 @@
+# Intégration continue du plugin vigilium.
+#  - plugin : contrôles de conformité (syntaxe PHP, structure, info.json), par
+#    le workflow réutilisable maintenu par Jeedom, utilisé par les plugins
+#    officiels.
+#  - tests : le jeu d'essai hors ligne et les contrôles statiques, sous chaque
+#    version de PHP prise en charge. « php -l » ne voit pas une fonction PHP 8
+#    appelée sous PHP 7.4 (str_contains…) : seule l'exécution la révèle.
+#    Le mode par réflexion de tests/check-classes.php demande un Jeedom
+#    installé : seul son mode --statique, qui lit les sources, tourne ici.
+name: 'Full Workflows Plugin Jeedom'
+
+on:
+  push:
+    branches: [beta, 'ci-*']
+  pull_request:
+    branches: [beta, master]
+  workflow_dispatch:
+
+jobs:
+  plugin:
+    uses: jeedom/workflows/.github/workflows/plugin.yml@main
+
+  tests:
+    name: Tests hors ligne (PHP ${{ matrix.php }})
+    runs-on: ubuntu-24.04  # épinglé : PHP 7.4 doit rester disponible (ubuntu-latest passe à Ubuntu 26 en octobre 2026)
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.0', '8.2', '8.4']
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: none
+
+      - name: Syntaxe (php -l)
+        run: |
+          php -v
+          find . -name '*.php' -not -path './.git/*' -print0 \
+            | xargs -0 -n1 php -l
+
+      - name: Jeu d'essai hors ligne
+        run: php tests/run.php
+
+      - name: Contrôles statiques des pièges du cœur
+        run: php tests/check-classes.php --statique
