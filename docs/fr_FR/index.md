@@ -77,6 +77,30 @@ Passer d'un mode armé à l'autre (total vers nuit) **garde** l'incident en
 cours et ne relance pas le délai de sortie. Un délai d'entrée en cours continue jusqu'à son terme,
 même si son capteur n'est pas surveillé dans le nouveau mode.
 
+### Capteurs Shelly BLU (Bluetooth)
+
+Un contact Shelly BLU Door/Window arrive par mqttbe comme un équipement
+Bluetooth. Pour en faire un capteur d'alarme :
+
+1. **Chiffrez-le** dans l'application Shelly et déclarez sa clé dans mqttbe
+   (configuration, « Clés BTHome ») : en clair, n'importe quel émetteur
+   Bluetooth pourrait imiter ou rejouer ses trames — ouvrir ou refermer la
+   fenêtre aux yeux de l'alarme.
+2. **Commande** : son information « window » (ou « door »), **valeur
+   d'alerte 1** (1 = ouvert en BTHome).
+3. **Rôle** : périmètre, ou parcours d'entrée pour une porte par laquelle on
+   rentre. Décochez « Nuit » pour une fenêtre de l'étage où l'on dort.
+4. **Supervision** : comme commande « en ligne », sa **présence** dans mqttbe,
+   qui passe à 0 quand plus aucune passerelle ne l'a entendu. Pour un capteur
+   chiffré, seule une trame authentifiée compte : l'imiter ne le garde pas
+   « présent ». Un contact qui ne parle qu'à l'ouverture ne se prête pas à
+   « Muet après » ; vérifiez aussi que le délai d'absence de mqttbe est plus
+   long que l'intervalle entre deux trames du capteur au repos.
+
+Le Bluetooth se brouille facilement : placez au moins deux passerelles à portée
+de chaque capteur, et gardez la supervision — un capteur muet alarme armée est
+un sabotage.
+
 ## Réactions
 
 L'onglet **Réactions** dit ce que l'alarme fait de ses décisions : une liste

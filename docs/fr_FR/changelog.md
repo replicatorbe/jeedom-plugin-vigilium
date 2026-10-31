@@ -1,5 +1,10 @@
 # Changelog Vigilium
 
+## 0.4.1 — capteurs Shelly BLU
+
+- Documentation : brancher un contact Shelly BLU (chiffrement BTHome dans
+  mqttbe 0.11, commande, rôle, supervision par sa présence).
+
 ## 0.4 — sirènes
 
 - Sirènes avec mise en marche, arrêt, durée maximale toujours bornée, retard,

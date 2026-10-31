@@ -1,7 +1,7 @@
 {
     "id": "vigilium",
     "name": "Vigilium",
-    "pluginVersion": "0.4",
+    "pluginVersion": "0.4.1",
     "description": {
         "fr_FR": "Coordonne une alarme multiprotocole : suit l'armement d'une centrale existante, donne un rôle à chaque capteur (contacts, détecteurs, caméras, capteurs Bluetooth), applique délais d'entrée et de sortie, confirme une intrusion par un second capteur et surveille les capteurs muets. Réactions par listes d'actions, en observation par défaut.",
         "en_US": "Coordinates a multi-protocol alarm: follows the arming state of an existing alarm panel, gives each sensor a role (contacts, detectors, cameras, Bluetooth sensors), applies entry and exit delays, confirms an intrusion with a second sensor and watches for silent sensors. Reactions as action lists, observation by default."
