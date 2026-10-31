@@ -66,6 +66,13 @@ try {
         ajax::success($eqLogic->testerSorties((string) init('declencheur')));
     }
 
+    /* Fait sonner une sirène quelques secondes, POUR DE VRAI, puis l'arrête.
+     * La page demande confirmation avant. */
+    if (init('action') == 'testerSirene') {
+        $eqLogic = $getEqLogic(init('id'));
+        ajax::success($eqLogic->testerSirene((int) init('index')));
+    }
+
     throw new Exception(__('Aucune méthode correspondante à :', __FILE__) . ' ' . init('action'));
 } catch (Throwable $e) {
     ajax::error(displayException($e), $e->getCode());

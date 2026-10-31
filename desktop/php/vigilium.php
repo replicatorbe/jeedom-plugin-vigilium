@@ -265,6 +265,51 @@ $eqLogics = eqLogic::byType($plugin->getId());
                     </fieldset>
                 </form>
 
+                <legend><i class="fas fa-volume-up"></i> {{Sirènes}}
+                    <a class="btn btn-success btn-xs pull-right" id="bt_vigiliumAjouterSirene"><i class="fas fa-plus-circle"></i> {{Ajouter une sirène}}</a>
+                </legend>
+                <div class="help-block">{{Une sirène est mise en marche par les niveaux cochés, après son retard, et arrêtée au désarmement, à l'acquittement ou au bout de sa durée maximale — 3 min par défaut, 15 min au plus, constatée à la minute près. Une fois par incident : arrivée au bout de sa durée, elle ne repart pas tant que l'incident n'est pas terminé. « Sabotage » : seulement pour un capteur de rôle Sabotage, pas pour un capteur muet. « Sauf centrale » : pas quand la centrale a déclaré l'alarme de cet incident, puisqu'elle fait déjà sonner les siennes — le réglage de PANIC. Sans commande d'arrêt, l'alarme ne peut pas la couper : réglez aussi une durée de coupure sur l'appareil lui-même, qui protège même si Jeedom s'arrête.}}</div>
+                <div class="table-responsive">
+                <table class="table table-condensed" id="table_vigiliumSirenes">
+                    <thead><tr>
+                        <th>{{Nom}}</th>
+                        <th style="min-width:200px;">{{Mise en marche (action)}}</th>
+                        <th style="min-width:200px;">{{Arrêt (action)}}</th>
+                        <th style="width:90px;">{{Durée max (s)}}</th>
+                        <th style="width:80px;">{{Retard (s)}}</th>
+                        <th style="width:70px;">{{Alarme}}</th>
+                        <th style="width:80px;">{{Confirmée}}</th>
+                        <th style="width:80px;">{{Sabotage}}</th>
+                        <th style="width:90px;">{{Sauf centrale}}</th>
+                        <th style="width:110px;"></th>
+                    </tr></thead>
+                    <tbody></tbody>
+                </table>
+                </div>
+
+                <legend><i class="fas fa-heartbeat"></i> {{Signal de vie}}</legend>
+                <div class="help-block">{{Une action envoyée à intervalle régulier tant que l'alarme tourne — par exemple l'impulsion d'un relais câblé sur une entrée de la centrale (MultiTransmitter) : si Jeedom s'arrête, le signal cesse et la centrale le voit. Jamais au journal, et jamais en observation : une centrale qui surveille ce signal verra alors Jeedom comme arrêté.}}</div>
+                <form class="form-horizontal">
+                    <div class="form-group">
+                        <label class="col-sm-3 control-label">{{Action}}</label>
+                        <div class="col-sm-4">
+                            <div class="input-group">
+                                <input class="eqLogicAttr form-control roundedLeft" data-l1key="configuration" data-l2key="vie_cmd" style="display:none;">
+                                <input class="form-control" id="in_vigiliumNomVie" readonly placeholder="{{Aucune}}">
+                                <span class="input-group-btn">
+                                    <a class="btn btn-default" id="bt_vigiliumChoisirVie"><i class="fas fa-list-alt"></i></a>
+                                    <a class="btn btn-default roundedRight" id="bt_vigiliumViderVie" title="{{Retirer}}"><i class="fas fa-times"></i></a>
+                                </span>
+                            </div>
+                        </div>
+                        <div class="col-sm-2"><div class="input-group">
+                            <span class="input-group-addon roundedLeft">{{toutes les}}</span>
+                            <input type="number" min="0" class="eqLogicAttr form-control" data-l1key="configuration" data-l2key="vie_minutes" placeholder="0">
+                            <span class="input-group-addon roundedRight">{{min}}</span>
+                        </div></div>
+                    </div>
+                </form>
+
                 <legend><i class="fas fa-camera"></i> {{Photos}}
                     <a class="btn btn-success btn-xs pull-right" id="bt_vigiliumAjouterPhoto"><i class="fas fa-plus-circle"></i> {{Ajouter une caméra}}</a>
                 </legend>

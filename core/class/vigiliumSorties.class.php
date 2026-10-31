@@ -47,7 +47,202 @@ class vigiliumSorties {
     const AVEC_PHOTOS = array('suspicion', 'alarme', 'confirmee');
 
     public static function etatInitial() {
-        return array('relance' => null);
+        return array('relance' => null, 'sirenes' => array(), 'attentes' => array(), 'faites' => array(), 'centrale' => false, 'vie' => 0);
+    }
+
+    const SIRENE_DUREE_DEFAUT = 180;
+    const SIRENE_DUREE_MAX = 900;
+    const SIRENE_RETARD_MAX = 600;
+    const SIRENE_ESSAI = 3;
+
+    /*
+     * Les sirènes telles que le planificateur les lit. Une sirène sans
+     * commande de marche est écartée. La durée est TOUJOURS bornée : une
+     * sirène qui sonnerait jusqu'au retour des occupants, la nuit, chez les
+     * voisins, finit débranchée — et une alarme débranchée ne protège plus.
+     */
+    public static function nettoyerSirenes($_sirenes) {
+        /* Les index d'origine sont gardés : ce sont eux que la page envoie
+         * pour « Tester », et eux que l'état des sirènes en marche retient —
+         * une ligne incomplète ne doit pas décaler les suivantes. */
+        $propres = array();
+        foreach (is_array($_sirenes) ? $_sirenes : array() as $index => $sirene) {
+            if (!is_array($sirene) || !isset($sirene['marche']) || (int) $sirene['marche'] <= 0) {
+                continue;
+            }
+            $duree = (isset($sirene['duree']) && is_numeric($sirene['duree']) && (int) $sirene['duree'] > 0) ? (int) $sirene['duree'] : self::SIRENE_DUREE_DEFAUT;
+            $retard = (isset($sirene['retard']) && is_numeric($sirene['retard'])) ? (int) $sirene['retard'] : 0;
+            $propres[(int) $index] = array(
+                'nom' => (isset($sirene['nom']) && trim((string) $sirene['nom']) !== '') ? trim((string) $sirene['nom']) : ('#' . (int) $sirene['marche']),
+                'marche' => (int) $sirene['marche'],
+                'arret' => isset($sirene['arret']) ? max(0, (int) $sirene['arret']) : 0,
+                'duree' => max(5, min(self::SIRENE_DUREE_MAX, $duree)),
+                'retard' => max(0, min(self::SIRENE_RETARD_MAX, $retard)),
+                'alarme' => !empty($sirene['alarme']),
+                'confirmee' => !empty($sirene['confirmee']),
+                'sabotage' => !empty($sirene['sabotage']),
+                'sauf_centrale' => !empty($sirene['sauf_centrale']),
+            );
+        }
+        return $propres;
+    }
+
+    /*
+     * Les sirènes à mettre en marche ou à arrêter. Rend array($plan, $etat) ;
+     * chaque entrée : array('declencheur' => 'sirene_marche'|'sirene_arret',
+     * 'sirene' => index, 'nom', 'marche', 'arret', 'duree', 'reelle',
+     * 'detail', 'capteur').
+     *
+     *  - une décision alarme ou confirmee met en marche les sirènes qui la
+     *    suivent, tout de suite ou après leur retard ; « sabotage » seulement
+     *    pour un capteur de rôle sabotage — un capteur muet ou un « armé
+     *    malgré » ne réveille pas les voisins ;
+     *  - une fois par incident : arrivée au bout de sa durée, une sirène ne
+     *    repart pas à la détection suivante ;
+     *  - « sauf centrale » : pas quand la centrale a déclaré l'alarme de cet
+     *    incident, même si la décision vient d'un autre capteur, et un retard
+     *    en cours est annulé quand elle la déclare — le réglage de PANIC ;
+     *  - tout s'arrête, retards compris, au désarmement, à l'acquittement ou
+     *    à la fin de l'incident ; chaque sirène s'arrête seule au bout de sa
+     *    durée, constatée au battement.
+     *
+     * L'arrêt reprend la commande ENREGISTRÉE à la mise en marche, et non la
+     * configuration du moment : une ligne retirée ou modifiée pendant que la
+     * sirène sonne ne doit pas envoyer l'arrêt à une autre. Il part pour de
+     * vrai si la mise en marche était réelle, même si l'alarme est repassée
+     * en observation depuis.
+     *
+     * $_roles : array(id du capteur => rôle).
+     * $_options : array('battement' => bool, 'acquitter' => bool,
+     *                   'observation' => bool).
+     */
+    public static function planifierSirenes($_decisions, $_avant, $_apres, $_modeApres, $_etat, $_sirenes, $_roles, $_t, $_options = array()) {
+        $options = is_array($_options) ? $_options : array('battement' => (bool) $_options);
+        $battement = !empty($options['battement']);
+        $observation = !empty($options['observation']);
+        $etat = is_array($_etat) ? array_merge(self::etatInitial(), $_etat) : self::etatInitial();
+        $plan = array();
+        $enAlarme = function ($_niveau) {
+            return in_array($_niveau, array('alarme', 'confirmee'), true);
+        };
+        $arret = function ($_index, $_detail) use (&$etat, $_sirenes) {
+            $enMarche = $etat['sirenes'][$_index];
+            if (!is_array($enMarche)) {
+                /* Un état écrit avant que la commande d'arrêt n'y soit gardée :
+                 * à défaut de mieux, celle de la configuration actuelle. */
+                $enMarche = array('fin' => (int) $enMarche, 'reelle' => true,
+                                  'arret' => isset($_sirenes[$_index]) ? $_sirenes[$_index]['arret'] : 0,
+                                  'nom' => isset($_sirenes[$_index]) ? $_sirenes[$_index]['nom'] : '#' . $_index);
+            }
+            return array('declencheur' => 'sirene_arret', 'sirene' => (int) $_index, 'nom' => (string) $enMarche['nom'],
+                         'arret' => (int) $enMarche['arret'], 'reelle' => !empty($enMarche['reelle']),
+                         'detail' => $_detail, 'capteur' => 0);
+        };
+        $arreterTout = function ($_detail) use (&$etat, &$plan, $arret) {
+            foreach (array_keys($etat['sirenes']) as $index) {
+                $plan[] = $arret($index, $_detail);
+            }
+            $etat['sirenes'] = array();
+            $etat['attentes'] = array();
+            $etat['faites'] = array();
+            $etat['centrale'] = false;
+        };
+        $marche = function ($_index, $_sirene, $_detail, $_capteur) use (&$etat, &$plan, $_t, $observation) {
+            $etat['sirenes'][$_index] = array('fin' => $_t + $_sirene['duree'], 'arret' => $_sirene['arret'],
+                                              'nom' => $_sirene['nom'], 'reelle' => !$observation);
+            $etat['faites'][$_index] = true;
+            $plan[] = array('declencheur' => 'sirene_marche', 'sirene' => (int) $_index, 'nom' => $_sirene['nom'],
+                            'marche' => $_sirene['marche'], 'arret' => $_sirene['arret'], 'duree' => $_sirene['duree'],
+                            'reelle' => !$observation, 'detail' => $_detail, 'capteur' => $_capteur);
+        };
+
+        if ($_modeApres === 'desarme' || ($enAlarme($_avant) && !$enAlarme($_apres)) || !empty($options['acquitter'])) {
+            $arreterTout($_modeApres === 'desarme' ? 'Désarmé' : (!empty($options['acquitter']) ? 'Acquitté' : 'Fin de l\'incident'));
+            return array($plan, $etat);
+        }
+
+        foreach (is_array($_decisions) ? $_decisions : array() as $decision) {
+            $genre = isset($decision['genre']) ? $decision['genre'] : '';
+            if (!in_array($genre, array('alarme', 'confirmee', 'sabotage'), true)) {
+                continue;
+            }
+            /* Une alarme de centrale reçue désarmée (incendie, panique) ne fait
+             * pas monter le niveau : rien n'arrêterait ces sirènes-là, sinon
+             * leur durée. Les sirènes de la centrale, elles, sonnent déjà. */
+            if ($genre === 'alarme' && !$enAlarme($_apres)) {
+                continue;
+            }
+            $capteur = isset($decision['capteur']) ? (int) $decision['capteur'] : 0;
+            $role = isset($_roles[$capteur]) ? $_roles[$capteur] : '';
+            if ($genre === 'sabotage' && $role !== 'sabotage') {
+                continue;
+            }
+            if ($role === 'centrale' && $enAlarme($_apres)) {
+                $etat['centrale'] = true;
+                foreach (array_keys($etat['attentes']) as $index) {
+                    $attendue = isset($etat['attentes'][$index]['sirene']) ? $etat['attentes'][$index]['sirene']
+                              : (isset($_sirenes[$index]) ? $_sirenes[$index] : null);
+                    if (is_array($attendue) && !empty($attendue['sauf_centrale'])) {
+                        unset($etat['attentes'][$index]);
+                    }
+                }
+            }
+            foreach ($_sirenes as $index => $sirene) {
+                if (empty($sirene[$genre]) || ($sirene['sauf_centrale'] && !empty($etat['centrale']))) {
+                    continue;
+                }
+                if (isset($etat['sirenes'][$index]) || isset($etat['attentes'][$index]) || !empty($etat['faites'][$index])) {
+                    continue;
+                }
+                /* La sirène attendue est gardée telle quelle : retirer une ligne
+                 * pendant son retard ne doit pas en faire démarrer une autre. */
+                if ($sirene['retard'] > 0) {
+                    $etat['attentes'][$index] = array('debut' => $_t + $sirene['retard'], 'detail' => (string) $decision['detail'],
+                                                      'capteur' => $capteur, 'sirene' => $sirene);
+                    continue;
+                }
+                $marche($index, $sirene, (string) $decision['detail'], $capteur);
+            }
+        }
+
+        if ($battement) {
+            foreach ($etat['attentes'] as $index => $attente) {
+                if ($_t < (int) $attente['debut']) {
+                    continue;
+                }
+                unset($etat['attentes'][$index]);
+                $sirene = (isset($attente['sirene']) && is_array($attente['sirene'])) ? $attente['sirene']
+                        : (isset($_sirenes[$index]) ? $_sirenes[$index] : null);
+                if ($sirene === null) {
+                    continue;
+                }
+                $marche($index, $sirene, $attente['detail'], (int) $attente['capteur']);
+            }
+            foreach ($etat['sirenes'] as $index => $enMarche) {
+                $fin = is_array($enMarche) ? (int) $enMarche['fin'] : (int) $enMarche;
+                if ($_t >= $fin) {
+                    $plan[] = $arret($index, 'Durée maximale atteinte');
+                    unset($etat['sirenes'][$index]);
+                }
+            }
+        }
+        /* Plus d'alarme en cours : la mémoire de l'incident repart à zéro
+         * quand plus rien ne sonne ni n'attend. */
+        if (!$enAlarme($_apres) && count($etat['sirenes']) == 0 && count($etat['attentes']) == 0) {
+            $etat['faites'] = array();
+            $etat['centrale'] = false;
+        }
+        return array($plan, $etat);
+    }
+
+    /* Le signal de vie est-il dû ? Rend array(dû, nouvel état). */
+    public static function vieDue($_etat, $_minutes, $_t) {
+        $etat = is_array($_etat) ? array_merge(self::etatInitial(), $_etat) : self::etatInitial();
+        if ((int) $_minutes <= 0 || $_t - (int) $etat['vie'] < (int) $_minutes * 60 - 5) {
+            return array(false, $etat);
+        }
+        $etat['vie'] = $_t;
+        return array(true, $etat);
     }
 
     /* Les listes d'actions, au format du sélecteur des scénarios. Une ligne
@@ -211,6 +406,18 @@ class vigiliumSorties {
      * telle qu'elle serait partie. Rend la liste des échecs.
      */
     public static function executer($_eqLogic, $_entree, $_etatMoteur, $_config, $_observation, $_essai = false, &$_photosDuLot = null) {
+        if ($_entree['declencheur'] === 'sirene_marche' || $_entree['declencheur'] === 'sirene_arret') {
+            return self::sirene($_eqLogic, $_entree, $_observation, $_essai);
+        }
+        /* Le signal de vie n'est jamais tracé : une ligne par minute noierait
+         * le journal. En observation, il ne part pas. */
+        if ($_entree['declencheur'] === 'vie') {
+            $cmd = cmd::byId((int) $_eqLogic->getConfiguration('vie_cmd', 0));
+            if (!$_observation && is_object($cmd) && $cmd->getType() === 'action') {
+                $cmd->execCmd();
+            }
+            return array('nombre' => 1, 'echecs' => array());
+        }
         $sorties = self::nettoyer($_eqLogic->getConfiguration('sorties', array()));
         $actions = isset($sorties[$_entree['declencheur']]) ? $sorties[$_entree['declencheur']] : array();
         /* Les photos d'un même lot servent une fois : une alarme et sa
@@ -264,6 +471,59 @@ class vigiliumSorties {
                           . ' (' . $_entree['declencheur'] . ')' . (count($echecs) > 0 ? ' ; ' . __('échecs :', __FILE__) . ' ' . implode(' ; ', $echecs) : '')));
         }
         return array('nombre' => $jouees, 'echecs' => $echecs);
+    }
+
+    /*
+     * Met en marche ou arrête une sirène, avec les commandes que porte
+     * l'entrée du plan — celles de la mise en marche, pour l'arrêt. Une
+     * sirène sans commande d'arrêt ne peut pas être coupée par l'alarme :
+     * l'arrêt est alors seulement noté.
+     *
+     * Un arrêt part pour de vrai dès que la mise en marche l'était
+     * ('reelle'), même si l'alarme est repassée en observation depuis.
+     */
+    private static function sirene($_eqLogic, $_entree, $_observation, $_essai) {
+        $marche = ($_entree['declencheur'] === 'sirene_marche');
+        $nom = isset($_entree['nom']) ? (string) $_entree['nom'] : ('#' . (int) $_entree['sirene']);
+        $id = $marche ? (int) (isset($_entree['marche']) ? $_entree['marche'] : 0) : (int) (isset($_entree['arret']) ? $_entree['arret'] : 0);
+        $reel = $marche ? !$_observation : (!$_observation || !empty($_entree['reelle']));
+        $duree = isset($_entree['duree']) ? (int) $_entree['duree'] : 0;
+        $prefixe = $_essai ? '[' . __('Essai', __FILE__) . '] ' : '';
+        if ($id <= 0) {
+            $_eqLogic->journalAjouter(array('genre' => $marche ? 'defaut' : 'sortie', 'observation' => !$reel, 'capteur' => 0,
+                'detail' => $prefixe . ($marche
+                    ? sprintf(__('Sirène « %s » : aucune commande de mise en marche', __FILE__), $nom)
+                    : sprintf(__('Sirène « %s » : aucune commande d\'arrêt, elle s\'arrêtera d\'elle-même', __FILE__), $nom))));
+            return array('nombre' => 0, 'echecs' => array());
+        }
+        if (!$reel) {
+            $_eqLogic->journalAjouter(array('genre' => 'sortie', 'observation' => true, 'capteur' => (int) $_entree['capteur'],
+                'detail' => ($marche
+                    ? sprintf(__('Aurait mis en marche la sirène « %s » (%d s au plus)', __FILE__), $nom, $duree)
+                    : sprintf(__('Aurait arrêté la sirène « %s »', __FILE__), $nom)) . ' — ' . $_entree['detail']));
+            return array('nombre' => 1, 'echecs' => array());
+        }
+        $libelle = $marche
+            ? sprintf(__('Sirène « %s » mise en marche (%d s au plus)', __FILE__), $nom, $duree)
+            : sprintf(__('Sirène « %s » arrêtée', __FILE__), $nom);
+        $echecs = array();
+        try {
+            $cmd = cmd::byId($id);
+            if (!is_object($cmd) || $cmd->getType() !== 'action') {
+                throw new Exception(__('commande introuvable ou qui n\'est pas une action :', __FILE__) . ' #' . $id . '#');
+            }
+            $cmd->execCmd();
+        } catch (Throwable $e) {
+            $echecs[] = $e->getMessage();
+            log::add('vigilium', 'error', $_eqLogic->getHumanName() . ' ' . $libelle . ' — ' . $e->getMessage());
+        }
+        try {
+            $_eqLogic->journalAjouter(array('genre' => count($echecs) > 0 ? 'defaut' : 'sortie', 'observation' => false, 'capteur' => (int) $_entree['capteur'],
+                'detail' => $prefixe . $libelle . ' — ' . $_entree['detail'] . (count($echecs) > 0 ? ' ; ' . __('échec :', __FILE__) . ' ' . implode(' ; ', $echecs) : '')));
+        } catch (Throwable $e) {
+            log::add('vigilium', 'error', $_eqLogic->getHumanName() . ' : ' . $e->getMessage());
+        }
+        return array('nombre' => 1, 'echecs' => $echecs);
     }
 
     /* Une action, lisible au journal : la commande et son titre ou message. */

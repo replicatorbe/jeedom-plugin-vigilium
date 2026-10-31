@@ -46,6 +46,10 @@ class vigilium extends eqLogic {
      * synchrone) ne doit pas attendre un verrou qu'elle tient elle-même. */
     private static $_executionTenue = array();
 
+    /* Les alarmes en cours de suppression dans ce processus : plus aucun
+     * événement ne doit y lancer une sirène que plus rien ne suivrait. */
+    private static $_suppression = array();
+
     /* ================================================================ CYCLE */
 
     public function postSave() {
@@ -67,6 +71,7 @@ class vigilium extends eqLogic {
     }
 
     public function preRemove() {
+        self::$_suppression[(int) $this->getId()] = true;
         $this->removeListener();
         $this->finHorsMoteur(__('Alarme supprimée pendant un incident', __FILE__));
         foreach (array($this->fichierEtat(), $this->fichierJournal(), $this->fichierVerrou(), $this->fichierSorties(), $this->fichierVerrouExecution()) as $fichier) {
@@ -390,7 +395,20 @@ class vigilium extends eqLogic {
             if (!flock($verrou, LOCK_EX)) {
                 throw new Exception(__('Verrou impossible à poser', __FILE__));
             }
+            /* Relu sous le verrou : un événement parti avant la désactivation
+             * de l'alarme ne doit plus rien décider — ni lancer une sirène que
+             * plus aucun battement n'arrêterait. */
+            $frais = eqLogic::byId($this->getId());
+            if (!is_object($frais) || $frais->getIsEnable() != 1 || !empty(self::$_suppression[(int) $this->getId()])) {
+                return;
+            }
             $evenements = is_callable($_evenements) ? call_user_func($_evenements) : $_evenements;
+            $acquitter = false;
+            foreach ($evenements as $evenement) {
+                if (is_array($evenement) && isset($evenement['type']) && $evenement['type'] === 'acquitter') {
+                    $acquitter = true;
+                }
+            }
             $etat = $this->lireEtat();
             $avant = $etat['niveau'];
             $config = $this->configMoteur();
@@ -413,6 +431,22 @@ class vigilium extends eqLogic {
                       'max' => $this->getConfiguration('relance_max', vigiliumSorties::RELANCE_MAX_DEFAUT),
                       'listes' => count($sorties['relance']) > 0),
                 $maintenant, $_battement);
+            /* Les sirènes d'abord, à la mise en marche comme à l'arrêt : c'est
+             * ce qui doit partir le plus vite, et s'arrêter le plus sûrement. */
+            $roles = array();
+            foreach ($config['capteurs'] as $id => $capteur) {
+                $roles[$id] = $capteur['role'];
+            }
+            list($planSirenes, $etatSorties) = vigiliumSorties::planifierSirenes($toutes, $avant, $etat['niveau'], $etat['mode'], $etatSorties,
+                vigiliumSorties::nettoyerSirenes($this->getConfiguration('sirenes', array())), $roles, $maintenant,
+                array('battement' => $_battement, 'acquitter' => $acquitter, 'observation' => $this->enObservation()));
+            $plan = array_merge($planSirenes, $plan);
+            if ($_battement) {
+                list($vie, $etatSorties) = vigiliumSorties::vieDue($etatSorties, (int) $this->getConfiguration('vie_minutes', 0), $maintenant);
+                if ($vie && (int) $this->getConfiguration('vie_cmd', 0) > 0) {
+                    $plan[] = array('declencheur' => 'vie', 'genre' => 'vie', 'detail' => '', 'capteur' => 0);
+                }
+            }
             $this->ecrireSorties($etatSorties);
             /* Le verrou d'exécution est pris AVANT de rendre celui de l'état :
              * les plans s'exécutent dans l'ordre où ils ont été arrêtés. Sans
@@ -495,14 +529,40 @@ class vigilium extends eqLogic {
         if (!file_exists($this->fichierEtat())) {
             return;
         }
+        /* Sous le verrou d'état, comme le moteur : une sirène lancée par un
+         * événement en cours de traitement est ainsi vue ici. */
+        $verrouEtat = @fopen($this->fichierVerrou(), 'c');
+        if ($verrouEtat !== false) {
+            flock($verrouEtat, LOCK_EX);
+        }
         $etat = $this->lireEtat();
-        if (!in_array($etat['niveau'], array(vigiliumMoteur::NIVEAU_ALARME, vigiliumMoteur::NIVEAU_CONFIRMEE), true)) {
+        $enAlarme = in_array($etat['niveau'], array(vigiliumMoteur::NIVEAU_ALARME, vigiliumMoteur::NIVEAU_CONFIRMEE), true);
+        list($arrets, $etatSorties) = vigiliumSorties::planifierSirenes(array(), $etat['niveau'], $etat['niveau'], 'desarme',
+            $this->lireSorties(), array(), array(), time(), array());
+        if (!$enAlarme && count($arrets) == 0) {
+            if ($verrouEtat !== false) {
+                flock($verrouEtat, LOCK_UN);
+                fclose($verrouEtat);
+            }
             return;
         }
         $verrou = $this->prendreVerrouExecution();
+        if ($verrouEtat !== false) {
+            flock($verrouEtat, LOCK_UN);
+            fclose($verrouEtat);
+        }
         try {
-            vigiliumSorties::executer($this, array('declencheur' => 'fin', 'genre' => 'fin', 'capteur' => 0, 'detail' => $_detail),
-                $etat, $this->configMoteur(), $this->enObservation());
+            /* Les sirènes en marche d'abord — y compris celles d'un sabotage,
+             * hors alarme : désactivée, l'alarme ne les arrêterait plus jamais.
+             * Avec les commandes d'arrêt enregistrées à leur mise en marche. */
+            foreach ($arrets as $arret) {
+                $arret['detail'] = $_detail;
+                vigiliumSorties::executer($this, $arret, $etat, $this->configMoteur(), $this->enObservation());
+            }
+            if ($enAlarme) {
+                vigiliumSorties::executer($this, array('declencheur' => 'fin', 'genre' => 'fin', 'capteur' => 0, 'detail' => $_detail),
+                    $etat, $this->configMoteur(), $this->enObservation());
+            }
         } catch (Throwable $e) {
             log::add(__CLASS__, 'error', $this->getHumanName() . ' : ' . $e->getMessage());
         } finally {
@@ -521,6 +581,44 @@ class vigilium extends eqLogic {
      * jouées POUR DE VRAI — c'est le seul moyen de vérifier une notification —
      * avec un texte d'essai reconnaissable, sans toucher à l'état de l'alarme.
      */
+    /*
+     * Le bouton « Tester » d'une sirène : en marche, quelques secondes, puis
+     * arrêtée — pour de vrai, après confirmation dans la page. L'arrêt part
+     * même si la mise en marche a échoué : mieux vaut un arrêt de trop qu'une
+     * sirène oubliée.
+     */
+    public function testerSirene($_index) {
+        $sirenes = vigiliumSorties::nettoyerSirenes($this->getConfiguration('sirenes', array()));
+        $index = (int) $_index;
+        if (!isset($sirenes[$index])) {
+            throw new Exception(__('Sirène introuvable ou sans commande de mise en marche : enregistrez d\'abord.', __FILE__));
+        }
+        /* Une sirène qui sonne pour une vraie alarme n'est pas testée : l'arrêt
+         * du test la couperait, alors que l'alarme la croit encore en marche. */
+        if (isset($this->lireSorties()['sirenes'][$index])) {
+            throw new Exception(__('Cette sirène sonne pour une alarme en cours : pas de test maintenant.', __FILE__));
+        }
+        $sirene = $sirenes[$index];
+        $etat = $this->lireEtat();
+        $config = $this->configMoteur();
+        $entree = array('sirene' => $index, 'nom' => $sirene['nom'], 'marche' => $sirene['marche'], 'arret' => $sirene['arret'],
+                        'duree' => vigiliumSorties::SIRENE_ESSAI, 'reelle' => true, 'capteur' => 0,
+                        'detail' => '[' . __('Essai', __FILE__) . '] ' . $sirene['nom']);
+        $marche = array('echecs' => array());
+        $arret = array('echecs' => array());
+        $verrou = $this->prendreVerrouExecution();
+        try {
+            $marche = vigiliumSorties::executer($this, array_merge($entree, array('declencheur' => 'sirene_marche')), $etat, $config, false, true);
+            sleep(vigiliumSorties::SIRENE_ESSAI);
+        } finally {
+            /* L'arrêt part quoi qu'il arrive à la mise en marche : mieux vaut
+             * un arrêt de trop qu'une sirène oubliée. */
+            $arret = vigiliumSorties::executer($this, array_merge($entree, array('declencheur' => 'sirene_arret')), $etat, $config, false, true);
+            $this->rendreVerrouExecution($verrou);
+        }
+        return array('nombre' => 1, 'echecs' => array_merge($marche['echecs'], $arret['echecs']), 'sans_arret' => ($sirene['arret'] <= 0));
+    }
+
     public function testerSorties($_declencheur) {
         if (!in_array($_declencheur, vigiliumSorties::DECLENCHEURS, true)) {
             throw new Exception(__('Déclencheur inconnu :', __FILE__) . ' ' . $_declencheur);
@@ -725,7 +823,7 @@ class vigilium extends eqLogic {
         $temporaire = $fichier . '.tmp';
         $json = json_encode($_etat, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         if ($json === false || file_put_contents($temporaire, $json) === false || !rename($temporaire, $fichier)) {
-            log::add(__CLASS__, 'error', $this->getHumanName() . ' : ' . __('relances non enregistrées dans', __FILE__) . ' ' . $fichier);
+            log::add(__CLASS__, 'error', $this->getHumanName() . ' : ' . __('état des réactions (relances, sirènes en marche) non enregistré dans', __FILE__) . ' ' . $fichier);
         }
     }
 

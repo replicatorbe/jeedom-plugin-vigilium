@@ -125,6 +125,51 @@ ou d'une action en tâche de fond est rattrapé par Jeedom lui-même et n'appara
 que dans son log « scenario ». Les blocs qui attendent (pause, attente, question) sont
 refusés : ils retiendraient l'alarme.
 
+## Sirènes
+
+Les listes d'actions ne savent ni arrêter une sirène au bout d'un temps, ni la
+retarder : les sirènes ont leur propre réglage, dans l'onglet Réactions.
+
+| Champ | Rôle |
+|---|---|
+| Mise en marche / Arrêt | Deux commandes d'action. Sans arrêt, l'alarme ne peut pas couper la sirène : elle s'arrête d'elle-même. |
+| Durée max | 180 s par défaut, 900 s au plus. Toujours bornée : une sirène qui sonne jusqu'au retour des occupants finit débranchée. |
+| Retard | Secondes entre la décision et la mise en marche : par exemple, la sirène extérieure 60 s après la confirmation. |
+| Alarme / Confirmée / Sabotage | Les niveaux qui la mettent en marche. Sabotage : seulement pour un capteur de rôle Sabotage, alarme armée — pas pour un capteur muet ni un « Armé malgré ». |
+| Sauf centrale | Pas quand la centrale a déclaré l'alarme de cet incident, même si la décision suivante vient d'un autre capteur ; un retard en cours est annulé quand elle la déclare. C'est le réglage d'une action PANIC envoyée à la centrale. |
+
+Une sirène sonne une fois par incident : arrivée au bout de sa durée, elle ne
+repart pas tant que l'incident n'est pas terminé (désarmement, acquittement) —
+une alarme laissée sans réponse pendant des heures ne refait pas sonner les
+sirènes à une nouvelle détection.
+
+L'arrêt utilise la commande enregistrée à la mise en marche : retirer ou
+modifier une sirène pendant qu'elle sonne n'envoie pas l'arrêt à une autre.
+Une sirène réellement mise en marche est arrêtée pour de vrai même si
+l'alarme est repassée en observation entre-temps.
+
+Les retards et les durées sont constatés par le battement du cron, à la
+minute près : un retard de 10 s peut devenir une minute. Si Jeedom s'arrête,
+plus rien n'arrête la sirène : réglez aussi une durée de coupure sur
+l'appareil (durée de sirène de la caméra, extinction automatique du relais).
+
+Tout s'arrête — sirènes en marche et
+retards en cours — au désarmement, à l'acquittement, à la désactivation ou à
+la suppression de l'alarme. Une alarme de centrale reçue désarmée (incendie,
+panique) ne met aucune sirène de Vigilium en marche : celles de la centrale
+sonnent déjà.
+
+Le bouton **Tester** d'une sirène la met en marche 3 secondes, pour de vrai,
+puis l'arrête — sauf si elle sonne pour une alarme en cours.
+
+## Signal de vie
+
+Une action envoyée toutes les N minutes tant que l'alarme tourne — par exemple
+l'impulsion d'un relais câblé sur une entrée de la centrale : si Jeedom
+s'arrête, le signal cesse et la centrale le voit. Il n'est jamais écrit au
+journal et ne part jamais en observation : une centrale qui surveille ce
+signal verra alors Jeedom comme arrêté.
+
 ## Commandes
 
 | Commande | Contenu |

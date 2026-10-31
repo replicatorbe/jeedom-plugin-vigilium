@@ -1,5 +1,15 @@
 # Changelog Vigilium
 
+## 0.4 — sirènes
+
+- Sirènes avec mise en marche, arrêt, durée maximale toujours bornée, retard,
+  niveaux déclencheurs (alarme, confirmée, sabotage) et option « sauf
+  centrale » pour PANIC.
+- Arrêt garanti au désarmement, à l'acquittement, au bout de la durée, à la
+  désactivation ou à la suppression de l'alarme ; une fois par incident.
+- Bouton « Tester » par sirène : 3 secondes, puis arrêt.
+- Signal de vie à intervalle régulier pour une centrale qui surveille Jeedom.
+
 ## 0.3 — réactions
 
 - Onglet Réactions : une liste d'actions par déclencheur (suspicion, alarme,

@@ -456,6 +456,71 @@ function vigiliumLirePhotos() {
   return cameras
 }
 
+/* Une sirène : sa mise en marche, son arrêt, sa durée, son retard, les
+   niveaux qui la déclenchent. */
+function vigiliumAjouterSirene(_sirene) {
+  var sirene = _sirene || {}
+  var tr = document.createElement('tr')
+  tr.classList.add('vigiliumSirene')
+  var commande = function (_classe) {
+    return '<td><div class="input-group">'
+      + '<input class="form-control input-sm roundedLeft ' + _classe + '" readonly>'
+      + '<span class="input-group-btn">'
+      + '<a class="btn btn-default btn-sm vigiliumChoisirSirene" data-cible="' + _classe + '"><i class="fas fa-list-alt"></i></a>'
+      + '<a class="btn btn-default btn-sm roundedRight vigiliumViderSirene" data-cible="' + _classe + '" title="{{Retirer}}"><i class="fas fa-times"></i></a>'
+      + '</span></div></td>'
+  }
+  var coche = function (_classe, _titre) {
+    return '<td style="text-align:center;"><input type="checkbox" class="' + _classe + '" title="' + _titre + '" aria-label="' + _titre + '"></td>'
+  }
+  tr.innerHTML = '<td><input class="form-control input-sm vigiliumSireneNom"></td>'
+    + commande('vigiliumSireneMarche') + commande('vigiliumSireneArret')
+    + '<td><input type="number" min="5" max="900" class="form-control input-sm vigiliumSireneDuree" placeholder="180"></td>'
+    + '<td><input type="number" min="0" max="600" class="form-control input-sm vigiliumSireneRetard" placeholder="0"></td>'
+    + coche('vigiliumSireneAlarme', '{{Sur alarme}}') + coche('vigiliumSireneConfirmee', '{{Sur alarme confirmée}}')
+    + coche('vigiliumSireneSabotage', '{{Sur un capteur de rôle Sabotage (autoprotection, brouillage, caméra masquée), alarme armée}}') + coche('vigiliumSireneSaufCentrale', '{{Pas quand la centrale a déclaré l\'alarme de cet incident}}')
+    + '<td style="white-space:nowrap;">'
+    + '<a class="btn btn-default btn-xs vigiliumTesterSirene" title="{{Faire sonner quelques secondes, pour de vrai}}"><i class="fas fa-vial"></i> {{Tester}}</a> '
+    + '<a class="btn btn-danger btn-xs vigiliumRetirerSirene" title="{{Retirer cette sirène}}"><i class="fas fa-minus-circle"></i></a>'
+    + '</td>'
+  document.getElementById('table_vigiliumSirenes').querySelector('tbody').appendChild(tr)
+  vigiliumAfficherNomCommande(tr.querySelector('.vigiliumSireneMarche'), init(sirene.marche, 0))
+  vigiliumAfficherNomCommande(tr.querySelector('.vigiliumSireneArret'), init(sirene.arret, 0))
+  tr.querySelector('.vigiliumSireneNom').value = String(init(sirene.nom, ''))
+  tr.querySelector('.vigiliumSireneDuree').value = isset(sirene.duree) ? String(sirene.duree) : ''
+  tr.querySelector('.vigiliumSireneRetard').value = (isset(sirene.retard) && String(sirene.retard) !== '0') ? String(sirene.retard) : ''
+  /* Une sirène neuve sonne sur alarme et sur confirmation : c'est en
+     décochant qu'on la réserve à la confirmation. */
+  tr.querySelector('.vigiliumSireneAlarme').checked = isset(_sirene) ? !!parseInt(init(sirene.alarme, 0), 10) : true
+  tr.querySelector('.vigiliumSireneConfirmee').checked = isset(_sirene) ? !!parseInt(init(sirene.confirmee, 0), 10) : true
+  tr.querySelector('.vigiliumSireneSabotage').checked = !!parseInt(init(sirene.sabotage, 0), 10)
+  tr.querySelector('.vigiliumSireneSaufCentrale').checked = !!parseInt(init(sirene.sauf_centrale, 0), 10)
+}
+
+function vigiliumLireSirenes() {
+  var sirenes = []
+  document.querySelectorAll('#table_vigiliumSirenes tbody tr.vigiliumSirene').forEach(function (tr) {
+    var marche = parseInt(tr.querySelector('.vigiliumSireneMarche').getAttribute('data-cmd'), 10)
+    var arret = parseInt(tr.querySelector('.vigiliumSireneArret').getAttribute('data-cmd'), 10)
+    var duree = parseInt(tr.querySelector('.vigiliumSireneDuree').value, 10)
+    var retard = parseInt(tr.querySelector('.vigiliumSireneRetard').value, 10)
+    /* Une ligne sans mise en marche est gardée — le serveur l'ignore — pour
+       que la saisie survive au rechargement. */
+    sirenes.push({
+      nom: String(tr.querySelector('.vigiliumSireneNom').value).trim(),
+      marche: (isNaN(marche) || marche <= 0) ? 0 : marche,
+      arret: (isNaN(arret) || arret <= 0) ? 0 : arret,
+      duree: (isNaN(duree) || duree <= 0) ? 180 : duree,
+      retard: (isNaN(retard) || retard < 0) ? 0 : retard,
+      alarme: tr.querySelector('.vigiliumSireneAlarme').checked ? 1 : 0,
+      confirmee: tr.querySelector('.vigiliumSireneConfirmee').checked ? 1 : 0,
+      sabotage: tr.querySelector('.vigiliumSireneSabotage').checked ? 1 : 0,
+      sauf_centrale: tr.querySelector('.vigiliumSireneSaufCentrale').checked ? 1 : 0
+    })
+  })
+  return sirenes
+}
+
 /* Le bandeau dit, à l'endroit où l'on règle les réactions, si elles partent
    pour de vrai. */
 function vigiliumAfficherExecution() {
@@ -489,6 +554,9 @@ function printEqLogic(_eqLogic) {
         sorties[declencheur].forEach(function (action) { vigiliumAjouterAction(declencheur, action) })
       }
     })
+    document.getElementById('table_vigiliumSirenes').querySelector('tbody').innerHTML = ''
+    ;(Array.isArray(configuration.sirenes) ? configuration.sirenes : []).forEach(function (sirene) { vigiliumAjouterSirene(sirene) })
+    vigiliumAfficherNomCommande(document.getElementById('in_vigiliumNomVie'), init(configuration.vie_cmd, 0))
     document.getElementById('table_vigiliumPhotos').querySelector('tbody').innerHTML = ''
     ;(Array.isArray(configuration.photos) ? configuration.photos : []).forEach(function (camera) { vigiliumAjouterPhoto(camera) })
     /* Une alarme enregistrée avant l'existence du réglage est en observation. */
@@ -522,6 +590,7 @@ function saveEqLogic(_eqLogic) {
   _eqLogic.configuration.capteurs = vigiliumLireCapteurs()
   _eqLogic.configuration.sorties = vigiliumLireSorties()
   _eqLogic.configuration.photos = vigiliumLirePhotos()
+  _eqLogic.configuration.sirenes = vigiliumLireSirenes()
   if (String(init(_eqLogic.configuration.execution, '')) === '') { _eqLogic.configuration.execution = 'observation' }
   return _eqLogic
 }
@@ -645,6 +714,79 @@ vigiliumContainer.addEventListener('click', function (event) {
     return
   }
 
+  if (cible = event.target.closest('#bt_vigiliumAjouterSirene')) {
+    vigiliumAjouterSirene(null)
+    vigiliumMarkModified()
+    return
+  }
+
+  if (cible = event.target.closest('.vigiliumRetirerSirene')) {
+    var ligneSirene = cible.closest('tr')
+    jeeDialog.confirm('{{Retirer cette sirène de l\'alarme ?}}', function (ok) {
+      if (!ok) { return }
+      ligneSirene.remove()
+      vigiliumMarkModified()
+    })
+    return
+  }
+
+  if (cible = event.target.closest('.vigiliumChoisirSirene')) {
+    var champSirene = cible.closest('tr').querySelector('.' + cible.getAttribute('data-cible'))
+    jeedom.cmd.getSelectModal({ cmd: { type: 'action' } }, function (result) {
+      if (!isset(result) || !isset(result.cmd) || !isset(result.cmd.id)) { return }
+      vigiliumAfficherNomCommande(champSirene, result.cmd.id)
+      vigiliumMarkModified()
+    })
+    return
+  }
+
+  if (cible = event.target.closest('.vigiliumViderSirene')) {
+    vigiliumAfficherNomCommande(cible.closest('tr').querySelector('.' + cible.getAttribute('data-cible')), 0)
+    vigiliumMarkModified()
+    return
+  }
+
+  if (cible = event.target.closest('.vigiliumTesterSirene')) {
+    var idSirene = vigiliumCurrentId()
+    if (idSirene === '') { return }
+    if ((typeof jeeFrontEnd !== 'undefined' && jeeFrontEnd.modifyWithoutSave) || window.modifyWithoutSave) {
+      jeedomUtils.showAlert({ message: '{{Sauvegardez d\'abord : le test fait sonner la sirène enregistrée.}}', level: 'warning' })
+      return
+    }
+    var lignes = Array.prototype.slice.call(document.querySelectorAll('#table_vigiliumSirenes tbody tr.vigiliumSirene'))
+    var index = lignes.indexOf(cible.closest('tr'))
+    jeeDialog.confirm('{{Faire sonner cette sirène quelques secondes, pour de vrai ?}}', function (ok) {
+      if (!ok) { return }
+      vigiliumAjax('testerSirene', { id: idSirene, index: index }, function (resultat) {
+        if (resultat.echecs.length > 0) {
+          jeedomUtils.showAlert({ message: '{{Échec :}} ' + resultat.echecs.join(' ; '), level: 'danger', ttl: 15000 })
+        } else if (resultat.sans_arret) {
+          jeedomUtils.showAlert({ message: '{{Sirène mise en marche. Sans commande d\'arrêt, elle s\'arrêtera d\'elle-même.}}', level: 'warning' })
+        } else {
+          jeedomUtils.showAlert({ message: '{{Sirène mise en marche puis arrêtée.}}', level: 'success' })
+        }
+      })
+    })
+    return
+  }
+
+  if (cible = event.target.closest('#bt_vigiliumChoisirVie')) {
+    jeedom.cmd.getSelectModal({ cmd: { type: 'action' } }, function (result) {
+      if (!isset(result) || !isset(result.cmd) || !isset(result.cmd.id)) { return }
+      document.querySelector('.eqLogicAttr[data-l1key="configuration"][data-l2key="vie_cmd"]').value = result.cmd.id
+      vigiliumAfficherNomCommande(document.getElementById('in_vigiliumNomVie'), result.cmd.id)
+      vigiliumMarkModified()
+    })
+    return
+  }
+
+  if (cible = event.target.closest('#bt_vigiliumViderVie')) {
+    document.querySelector('.eqLogicAttr[data-l1key="configuration"][data-l2key="vie_cmd"]').value = ''
+    vigiliumAfficherNomCommande(document.getElementById('in_vigiliumNomVie'), 0)
+    vigiliumMarkModified()
+    return
+  }
+
   if (cible = event.target.closest('#bt_vigiliumAjouterPhoto')) {
     vigiliumAjouterPhoto(null)
     vigiliumMarkModified()
@@ -722,7 +864,7 @@ vigiliumContainer.addEventListener('change', function (event) {
   }
   /* Capteurs et réactions ne sont pas des .eqLogicAttr : le cœur ne les voit
      pas changer, et quitterait la page sans prévenir. */
-  if (event.target.closest('#table_vigiliumCapteurs') || event.target.closest('.vigiliumAction')) { vigiliumMarkModified() }
+  if (event.target.closest('#table_vigiliumCapteurs') || event.target.closest('.vigiliumAction') || event.target.closest('#table_vigiliumSirenes')) { vigiliumMarkModified() }
 })
 
 /* Une commande tapée ou collée à la main : ses options sont redessinées quand
