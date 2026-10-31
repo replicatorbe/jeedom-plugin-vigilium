@@ -45,6 +45,20 @@ try {
         ));
     }
 
+    /* Les valeurs actuelles des commandes désignées dans la page, pour qu'on
+     * puisse vérifier le sens de la « valeur d'alerte ». Uniquement des
+     * informations : lire une action reviendrait à l'exécuter. */
+    if (init('action') == 'valeurs') {
+        $valeurs = array();
+        foreach (explode(',', (string) init('ids')) as $id) {
+            $cmd = cmd::byId((int) $id);
+            if (is_object($cmd) && $cmd->getType() === 'info') {
+                $valeurs[(int) $id] = $cmd->execCmd();
+            }
+        }
+        ajax::success($valeurs);
+    }
+
     throw new Exception(__('Aucune méthode correspondante à :', __FILE__) . ' ' . init('action'));
 } catch (Throwable $e) {
     ajax::error(displayException($e), $e->getCode());

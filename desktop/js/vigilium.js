@@ -40,6 +40,54 @@ var vigiliumGenres = {
    sont pas des modifications de l'utilisateur. */
 var vigiliumRendering = false
 
+/* L'équipement dont printEqLogic a réellement rempli les capteurs. Tant
+   qu'il ne correspond pas à l'équipement ouvert, la sauvegarde est refusée :
+   elle enregistrerait un tableau vide et effacerait tous les capteurs. */
+var vigiliumChargePour = null
+
+/* Le dernier journal reçu, gardé pour le filtrer sans recharger. */
+var vigiliumJournal = []
+
+/*
+ * Requête vers le contrôleur du plugin. Un fetch et non domUtils.ajax : sur
+ * une réponse HTTP en échec, domUtils.ajax rejoue la requête puis se tait
+ * (console.warn seulement, ni error: ni message), et l'écran restait sur des
+ * données périmées. Ici, tout échec — HTTP, réseau, JSON illisible, état non
+ * « ok » — finit dans un message.
+ */
+function vigiliumAjax(_action, _data, _success) {
+  var corps = new URLSearchParams()
+  var donnees = Object.assign({ action: _action }, _data || {})
+  for (var cle in donnees) {
+    if (Object.prototype.hasOwnProperty.call(donnees, cle)) { corps.append(cle, String(donnees[cle])) }
+  }
+  fetch('plugins/vigilium/core/ajax/vigilium.ajax.php', {
+    method: 'POST',
+    body: corps,
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+    credentials: 'same-origin'
+  }).then(function (reponse) {
+    return reponse.text().then(function (texte) {
+      if (!reponse.ok) {
+        throw new Error('{{Le serveur a répondu}} ' + reponse.status + ' — ' + texte.substring(0, 300))
+      }
+      var data = null
+      try {
+        data = JSON.parse(texte)
+      } catch (erreur) {
+        throw new Error('{{Réponse illisible du plugin :}} ' + texte.substring(0, 300))
+      }
+      if (data === null || data.state != 'ok') {
+        throw new Error((data !== null && isset(data.result)) ? String(data.result) : '{{Erreur sans message.}}')
+      }
+      return data.result
+    })
+  }).then(_success).catch(function (erreur) {
+    if (isset(erreur) && erreur !== null && erreur.name === 'AbortError') { return }
+    jeedomUtils.showAlert({ message: String(isset(erreur.message) ? erreur.message : erreur), level: 'danger', ttl: 15000 })
+  })
+}
+
 function vigiliumMarkModified() {
   if (vigiliumRendering) { return }
   if (typeof jeeFrontEnd !== 'undefined') { jeeFrontEnd.modifyWithoutSave = true }
@@ -108,16 +156,17 @@ function vigiliumAjouterLigneCapteur(_capteur) {
     + '<td><input class="form-control input-sm vigiliumNom"></td>'
     + '<td><select class="form-control input-sm vigiliumRole">' + options + '</select></td>'
     + '<td><input class="form-control input-sm vigiliumAlerte" placeholder="1"></td>'
-    + '<td style="text-align:center;"><input type="checkbox" class="vigiliumTotal"></td>'
-    + '<td style="text-align:center;"><input type="checkbox" class="vigiliumNuit"></td>'
-    + '<td><input class="form-control input-sm vigiliumMuet" placeholder="{{non}}"></td>'
+    + '<td class="vigiliumActuel" style="white-space:nowrap;"></td>'
+    + '<td style="text-align:center;"><input type="checkbox" class="vigiliumTotal" title="{{Surveillé en armement total}}" aria-label="{{Total}}"></td>'
+    + '<td style="text-align:center;"><input type="checkbox" class="vigiliumNuit" title="{{Surveillé en mode nuit}}" aria-label="{{Nuit}}"></td>'
+    + '<td><input type="number" min="0" step="1" class="form-control input-sm vigiliumMuet" placeholder="{{non}}"></td>'
     + '<td><div class="input-group">'
     + '<input class="form-control input-sm roundedLeft vigiliumEnLigne" readonly>'
     + '<span class="input-group-btn">'
     + '<a class="btn btn-default btn-sm vigiliumChoisirCmd" data-cible="vigiliumEnLigne"><i class="fas fa-list-alt"></i></a>'
     + '<a class="btn btn-default btn-sm roundedRight vigiliumViderEnLigne" title="{{Retirer}}"><i class="fas fa-times"></i></a>'
     + '</span></div></td>'
-    + '<td><a class="btn btn-danger btn-xs vigiliumSupprimerCapteur"><i class="fas fa-minus-circle"></i></a></td>'
+    + '<td><a class="btn btn-danger btn-xs vigiliumSupprimerCapteur" title="{{Retirer ce capteur}}"><i class="fas fa-minus-circle"></i></a></td>'
 
   document.getElementById('table_vigiliumCapteurs').querySelector('tbody').appendChild(tr)
 
@@ -135,6 +184,44 @@ function vigiliumAjouterLigneCapteur(_capteur) {
   return tr
 }
 
+/* Montre, dans la ligne, la valeur actuelle de la commande et ce qu'elle
+   veut dire avec la valeur d'alerte saisie : c'est le seul moyen de vérifier
+   le sens d'un contact sans attendre qu'il déclenche — ou ne déclenche pas. */
+function vigiliumAfficherActuel(_ligne, _valeur) {
+  var cellule = _ligne.querySelector('.vigiliumActuel')
+  if (cellule === null) { return }
+  cellule.textContent = ''
+  if (!isset(_valeur) || _valeur === null) { return }
+  var attendue = String(_ligne.querySelector('.vigiliumAlerte').value).trim() || '1'
+  var valeur = String(_valeur).trim()
+  var alerte = (!isNaN(parseFloat(attendue)) && !isNaN(parseFloat(valeur)))
+    ? parseFloat(attendue) === parseFloat(valeur)
+    : attendue.toLowerCase() === valeur.toLowerCase()
+  var badge = document.createElement('span')
+  badge.className = 'label ' + (alerte ? 'label-warning' : 'label-success')
+  badge.textContent = alerte ? '{{en alerte}}' : '{{au repos}}'
+  cellule.appendChild(document.createTextNode(valeur + ' '))
+  cellule.appendChild(badge)
+}
+
+function vigiliumChargerValeurs() {
+  var lignes = document.querySelectorAll('#table_vigiliumCapteurs tbody tr.vigiliumCapteur')
+  var ids = []
+  for (var i = 0; i < lignes.length; i++) {
+    var id = parseInt(lignes[i].querySelector('.vigiliumCmd').getAttribute('data-cmd'), 10)
+    if (!isNaN(id) && id > 0) { ids.push(id) }
+  }
+  if (ids.length === 0) { return }
+  vigiliumAjax('valeurs', { ids: ids.join(',') }, function (valeurs) {
+    var lignesActuelles = document.querySelectorAll('#table_vigiliumCapteurs tbody tr.vigiliumCapteur')
+    for (var j = 0; j < lignesActuelles.length; j++) {
+      var cmd = lignesActuelles[j].querySelector('.vigiliumCmd').getAttribute('data-cmd')
+      lignesActuelles[j].setAttribute('data-valeur', (valeurs && isset(valeurs[cmd])) ? String(valeurs[cmd]) : '')
+      vigiliumAfficherActuel(lignesActuelles[j], (valeurs && isset(valeurs[cmd])) ? valeurs[cmd] : null)
+    }
+  })
+}
+
 /* Les lignes incomplètes ne sont pas enregistrées : elles sont signalées,
    pour qu'un capteur saisi à moitié ne disparaisse pas sans un mot. */
 function vigiliumLireCapteurs() {
@@ -142,6 +229,7 @@ function vigiliumLireCapteurs() {
   var incompletes = []
   var vus = {}
   var doublons = []
+  var jamais = []
   var lignes = document.querySelectorAll('#table_vigiliumCapteurs tbody tr.vigiliumCapteur')
   for (var i = 0; i < lignes.length; i++) {
     var ligne = lignes[i]
@@ -155,6 +243,9 @@ function vigiliumLireCapteurs() {
     if (!isNaN(cmd) && cmd > 0) {
       if (vus[cmd]) { doublons.push(nomLigne) }
       vus[cmd] = true
+    }
+    if (!ligne.querySelector('.vigiliumTotal').checked && !ligne.querySelector('.vigiliumNuit').checked) {
+      jamais.push(nomLigne)
     }
     var enLigne = parseInt(ligne.querySelector('.vigiliumEnLigne').getAttribute('data-cmd'), 10)
     var muet = parseInt(ligne.querySelector('.vigiliumMuet').value, 10)
@@ -171,6 +262,9 @@ function vigiliumLireCapteurs() {
   }
   if (incompletes.length > 0) {
     jeedomUtils.showAlert({ message: '{{Capteurs ignorés par l\'alarme tant qu\'il leur manque une commande ou un rôle}} : ' + incompletes.join(', '), level: 'warning', ttl: 15000 })
+  }
+  if (jamais.length > 0) {
+    jeedomUtils.showAlert({ message: '{{Capteurs surveillés dans aucun mode (ni Total ni Nuit)}} : ' + jamais.join(', '), level: 'warning', ttl: 15000 })
   }
   if (doublons.length > 0) {
     jeedomUtils.showAlert({ message: '{{La même commande est désignée deux fois}} : ' + doublons.join(', '), level: 'warning', ttl: 15000 })
@@ -189,55 +283,58 @@ function vigiliumDate(_t) {
 
 function vigiliumChargerJournal() {
   var id = vigiliumCurrentId()
-  var corps = document.querySelector('#table_vigiliumJournal tbody')
-  if (corps === null) { return }
   if (id === '') {
-    corps.innerHTML = ''
+    vigiliumJournal = []
+    vigiliumRenderJournal()
     return
   }
-  domUtils.ajax({
-    type: 'POST',
-    url: 'plugins/vigilium/core/ajax/vigilium.ajax.php',
-    data: { action: 'journal', id: id, nombre: 300 },
-    dataType: 'json',
-    global: false,
-    error: function (request, status, error) {
-      domUtils.handleAjaxError(request, status, error)
-    },
-    success: function (data) {
-      if (data.state != 'ok') {
-        jeedomUtils.showAlert({ message: data.result, level: 'danger' })
-        return
-      }
-      /* La page a pu changer d'équipement pendant l'aller-retour. */
-      if (vigiliumCurrentId() !== id) { return }
-      corps.innerHTML = ''
-      var entrees = data.result.entrees || []
-      for (var i = 0; i < entrees.length; i++) {
-        var entree = entrees[i]
-        var genre = vigiliumGenres[entree.genre] || { texte: String(entree.genre), classe: 'label-default' }
-        var tr = document.createElement('tr')
-        var tdDate = document.createElement('td')
-        tdDate.textContent = vigiliumDate(entree.t)
-        var tdGenre = document.createElement('td')
-        var label = document.createElement('span')
-        label.className = 'label ' + genre.classe
-        label.textContent = genre.texte
-        tdGenre.appendChild(label)
-        var tdDetail = document.createElement('td')
-        tdDetail.textContent = String(init(entree.detail, ''))
-        tr.appendChild(tdDate)
-        tr.appendChild(tdGenre)
-        tr.appendChild(tdDetail)
-        corps.appendChild(tr)
-      }
-      if (entrees.length === 0) {
-        corps.innerHTML = '<tr><td colspan="3">{{Journal vide pour le moment.}}</td></tr>'
-      }
-      var niveau = document.getElementById('span_vigiliumNiveau')
-      if (niveau !== null) { niveau.textContent = '{{Niveau actuel}} : ' + String(init(data.result.niveau, '')) }
-    }
+  vigiliumAjax('journal', { id: id, nombre: 300 }, function (resultat) {
+    /* La page a pu changer d'équipement pendant l'aller-retour. */
+    if (vigiliumCurrentId() !== id) { return }
+    vigiliumJournal = resultat.entrees || []
+    vigiliumRenderJournal()
+    var niveau = document.getElementById('span_vigiliumNiveau')
+    if (niveau !== null) { niveau.textContent = '{{Niveau actuel}} : ' + String(init(resultat.niveau, '')) }
   })
+}
+
+function vigiliumRenderJournal() {
+  var corps = document.querySelector('#table_vigiliumJournal tbody')
+  if (corps === null) { return }
+  var filtre = document.getElementById('sel_vigiliumFiltreJournal')
+  var choix = filtre !== null ? filtre.value : ''
+  var agir = ['suspicion', 'alarme', 'confirmee', 'sabotage']
+  corps.innerHTML = ''
+  var affichees = 0
+  for (var i = 0; i < vigiliumJournal.length; i++) {
+    var entree = vigiliumJournal[i]
+    if (choix === 'agir' && agir.indexOf(entree.genre) < 0) { continue }
+    if ((choix === 'defaut' || choix === 'info') && entree.genre !== choix) { continue }
+    var genre = vigiliumGenres[entree.genre] || { texte: String(entree.genre), classe: 'label-default' }
+    var tr = document.createElement('tr')
+    var tdDate = document.createElement('td')
+    tdDate.textContent = vigiliumDate(entree.t)
+    var tdGenre = document.createElement('td')
+    var label = document.createElement('span')
+    label.className = 'label ' + genre.classe
+    label.textContent = genre.texte
+    tdGenre.appendChild(label)
+    var tdDetail = document.createElement('td')
+    tdDetail.textContent = String(init(entree.detail, ''))
+    tr.appendChild(tdDate)
+    tr.appendChild(tdGenre)
+    tr.appendChild(tdDetail)
+    corps.appendChild(tr)
+    affichees++
+  }
+  if (affichees === 0) {
+    var vide = document.createElement('tr')
+    var td = document.createElement('td')
+    td.colSpan = 3
+    td.textContent = vigiliumJournal.length === 0 ? '{{Journal vide pour le moment.}}' : '{{Aucune entrée de ce genre.}}'
+    vide.appendChild(td)
+    corps.appendChild(vide)
+  }
 }
 
 /* ========================================================= CYCLE DU CŒUR */
@@ -253,18 +350,26 @@ function printEqLogic(_eqLogic) {
     for (var i = 0; i < capteurs.length; i++) {
       vigiliumAjouterLigneCapteur(capteurs[i])
     }
-    var journal = document.querySelector('#table_vigiliumJournal tbody')
-    if (journal !== null) { journal.innerHTML = '' }
+    vigiliumJournal = []
+    vigiliumRenderJournal()
+    vigiliumChargePour = String(init(_eqLogic.id, ''))
   } finally {
     vigiliumRendering = false
   }
   vigiliumChargerJournal()
+  vigiliumChargerValeurs()
 }
 
 /* Les capteurs sont une liste d'objets : data-lXkey ne sait pas les ramasser,
    c'est donc ici qu'ils rejoignent la configuration enregistrée. */
 function saveEqLogic(_eqLogic) {
   if (!isset(_eqLogic.configuration)) { _eqLogic.configuration = {} }
+  if (vigiliumChargePour === null || vigiliumChargePour !== String(init(_eqLogic.id, ''))) {
+    /* La page n'a pas fini de charger cet équipement : ses capteurs ne sont
+       pas à l'écran, et les enregistrer maintenant les effacerait. */
+    jeedomUtils.showAlert({ message: '{{La page n\'a pas fini de charger les capteurs : rechargez-la avant d\'enregistrer.}}', level: 'danger' })
+    throw new Error('vigilium : capteurs non chargés')
+  }
   _eqLogic.configuration.capteurs = vigiliumLireCapteurs()
   return _eqLogic
 }
@@ -337,6 +442,7 @@ vigiliumContainer.addEventListener('click', function (event) {
     jeedom.cmd.getSelectModal({ cmd: { type: 'info' } }, function (result) {
       if (!isset(result) || !isset(result.cmd) || !isset(result.cmd.id)) { return }
       vigiliumAfficherNomCommande(champ, result.cmd.id)
+      if (champ.classList.contains('vigiliumCmd')) { vigiliumChargerValeurs() }
       /* Le nom du capteur pré-rempli avec celui de son équipement : c'est ce
          qu'on lira au journal, autant qu'il parle tout de suite. */
       var nom = ligne.querySelector('.vigiliumNom')
@@ -356,8 +462,12 @@ vigiliumContainer.addEventListener('click', function (event) {
   }
 
   if (cible = event.target.closest('.vigiliumSupprimerCapteur')) {
-    cible.closest('tr').remove()
-    vigiliumMarkModified()
+    var ligneASupprimer = cible.closest('tr')
+    jeeDialog.confirm('{{Retirer ce capteur de l\'alarme ?}}', function (ok) {
+      if (!ok) { return }
+      ligneASupprimer.remove()
+      vigiliumMarkModified()
+    })
     return
   }
 
@@ -367,5 +477,19 @@ vigiliumContainer.addEventListener('click', function (event) {
 })
 
 vigiliumContainer.addEventListener('change', function (event) {
+  if (event.target.closest('#sel_vigiliumFiltreJournal')) {
+    vigiliumRenderJournal()
+    return
+  }
   if (event.target.closest('#table_vigiliumCapteurs')) { vigiliumMarkModified() }
+})
+
+/* La valeur d'alerte change : le verdict « en alerte / au repos » de la ligne
+   suit la saisie. */
+vigiliumContainer.addEventListener('input', function (event) {
+  var champ = event.target.closest('.vigiliumAlerte')
+  if (champ === null) { return }
+  var ligne = champ.closest('tr')
+  var valeur = ligne.getAttribute('data-valeur')
+  vigiliumAfficherActuel(ligne, (valeur === null || valeur === '') ? null : valeur)
 })

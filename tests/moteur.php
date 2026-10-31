@@ -162,13 +162,13 @@ scenario('Baie puis caméra : la caméra confirme', function () {
     verifier($etat['niveau'] === 'confirmee', 'niveau confirmee attendu, obtenu ' . $etat['niveau']);
 });
 
-scenario('Caméra seule : suspicion, repos, puis retombée', function () {
+scenario('Caméra seule : suspicion, repos glissant, puis retombée', function () {
     list($etat, $d) = rejouer(array(
         array(0, armer()),
         array(500, capteur(4)),
         array(600, capteur(4)),
         array(700, array('type' => 'tick')),
-        array(801, array('type' => 'tick')),
+        array(901, array('type' => 'tick')),
     ));
     verifier(compter($d, 'suspicion') === 1, 'une seule suspicion attendue pendant le repos');
     verifier($etat['niveau'] === 'calme', 'retour au calme attendu, obtenu ' . $etat['niveau']);
@@ -233,9 +233,19 @@ scenario('Supervision : muet armé = sabotage, désarmé = défaut, une fois par
     verifier(genres($d) === array('defaut'), 'défaut attendu désarmé : ' . implode(',', genres($d)));
 });
 
-scenario('Total vers nuit : nouvel armement, incident clos', function () {
-    list($etat, $d) = rejouer(array(array(0, armer()), array(500, capteur(2)), array(600, armer('nuit'))));
-    verifier($etat['niveau'] === 'calme' && $etat['mode'] === 'nuit' && $etat['arme_depuis'] === 600, 'nouvel armement attendu');
+scenario('Total vers nuit pendant une intrusion : incident conservé, rien d\'exclu, pas de délai de sortie', function () {
+    list($etat, $d) = rejouer(array(
+        array(0, armer()), array(1000, capteur(2)), array(1001, capteur(4)),
+        array(1060, armer('nuit', array(2 => true))), array(1100, capteur(1)),
+    ));
+    verifier($etat['mode'] === 'nuit' && $etat['arme_depuis'] === 0, 'pas de nouvel armement');
+    verifier($etat['niveau'] === 'confirmee', 'incident conservé, obtenu ' . $etat['niveau']);
+    verifier(!isset($etat['exclus'][2]), 'la baie forcée ne doit pas être exclue');
+});
+
+scenario('Nuit vers total : une fenêtre surveillée en total seulement, et ouverte, est exclue', function () {
+    list($etat, $d) = rejouer(array(array(0, armer('nuit')), array(100, armer('total', array(7 => true)))));
+    verifier(isset($etat['exclus'][7]), 'la fenêtre de chambre, surveillée en total seulement et ouverte, est exclue au passage en total');
 });
 
 scenario('Robustesse : état et configuration abîmés', function () {
@@ -264,7 +274,8 @@ scenario('Mode inconnu : le mode et l\'incident sont conservés, un défaut par 
 
 scenario('Délai de sortie : rien de ce qui est ignoré ne confirme ensuite', function () {
     list($etat, $d) = rejouer(array(
-        array(0, armer()), array(10, capteur(3)), array(20, capteur(4)), array(40, capteur(1)), array(200, capteur(2)),
+        array(0, armer()), array(10, capteur(3)), array(15, capteur(3, false)), array(20, capteur(4)),
+        array(40, capteur(1)), array(45, capteur(1, false)), array(200, capteur(2)),
     ));
     verifier($etat['niveau'] === 'alarme', 'alarme simple attendue, obtenu ' . $etat['niveau']);
     verifier(compter($d, 'suspicion') === 0, 'pas de suspicion pendant la sortie');
@@ -322,6 +333,57 @@ scenario('Configuration normalisée deux fois : les capteurs restent', function 
     verifier(vigiliumMoteur::normaliserConfig($une) === $une, 'normaliserConfig doit être idempotente');
     list($etat, $d) = vigiliumMoteur::traiter(vigiliumMoteur::etatInitial(), $une, array('type' => 'muet', 'id' => 2, 'muet' => true), 10);
     verifier(genres($d) === array('defaut'), 'le capteur doit être vu avec une configuration déjà normalisée');
+});
+
+scenario('Porte ouverte pendant la sortie et laissée ouverte : délai d\'entrée à la fin de la sortie', function () {
+    list($etat, $d) = rejouer(array(array(0, armer()), array(30, capteur(1)), array(61, array('type' => 'tick')), array(107, array('type' => 'tick'))));
+    verifier($etat['niveau'] === 'alarme', 'alarme attendue à la fin du délai d\'entrée, obtenu ' . $etat['niveau']);
+});
+
+scenario('Délai de sortie nuit à zéro : porte ouverte à l\'armement exclue, ouverture ensuite = délai', function () {
+    $config = configReference();
+    $config['delai_sortie_nuit'] = 0;
+    list($etat, $d) = rejouer(array(array(0, armer('nuit', array(1 => true)))), $config);
+    verifier(isset($etat['exclus'][1]), 'porte ouverte à l\'armement exclue');
+    list($etat, $d) = rejouer(array(array(10, armer('nuit'))), $config, vigiliumMoteur::etatInitial());
+    list($etat, $d) = rejouer(array(array(20, capteur(1))), $config, $etat);
+    verifier($etat['niveau'] === 'delai', 'pas de délai de sortie en nuit : délai d\'entrée immédiat, obtenu ' . $etat['niveau']);
+});
+
+scenario('Sabotage et capteur muet d\'avant l\'armement : rappelés à l\'armement', function () {
+    list($etat, $d) = rejouer(array(
+        array(0, capteur(6)), array(10, array('type' => 'muet', 'id' => 2, 'muet' => true)), array(100, armer('nuit')),
+    ));
+    $dernier = end($d);
+    verifier($dernier['genre'] === 'sabotage' && strpos($dernier['detail'], 'Autoprotection') !== false && strpos($dernier['detail'], 'Baie salon') !== false,
+        'armé malgré sabotage et muet attendu : ' . $dernier['detail']);
+});
+
+scenario('Centrale : jamais une confirmation, jamais exclue, signalée désarmée', function () {
+    list($etat, $d) = rejouer(array(array(0, armer()), array(1000, capteur(2)), array(1001, capteur(5))));
+    verifier($etat['niveau'] === 'alarme', 'l\'écho de la centrale ne confirme pas, obtenu ' . $etat['niveau']);
+    list($etat, $d) = rejouer(array(array(0, armer('total', array(5 => true)))));
+    verifier(!isset($etat['exclus'][5]), 'la centrale n\'est jamais exclue');
+    list($etat, $d) = rejouer(array(array(0, capteur(5)), array(5, capteur(5)), array(10, capteur(5, false))));
+    verifier(genres($d) === array('alarme', 'info'), 'alarme centrale désarmé, une fois, puis retour : ' . implode(',', genres($d)));
+});
+
+scenario('Désarmement juste après la fin du délai : alarme annulée, et sans battement : rien', function () {
+    list($etat, $d) = rejouer(array(array(0, armer()), array(1000, capteur(1)), array(1050, array('type' => 'tick')), array(1060, armer('desarme'))));
+    $dernier = end($d);
+    verifier(strpos($dernier['detail'], 'alarme annulée') !== false, 'annulation attendue : ' . $dernier['detail']);
+    list($etat, $d) = rejouer(array(array(0, armer()), array(1000, capteur(1)), array(1060, armer('desarme'))));
+    verifier(compter($d, 'alarme') === 0, 'désarmé avant le battement : aucune alarme');
+});
+
+scenario('Acquitter pendant le délai d\'entrée : refusé', function () {
+    list($etat, $d) = rejouer(array(array(0, armer()), array(1000, capteur(1)), array(1010, array('type' => 'acquitter')), array(1050, array('type' => 'tick'))));
+    verifier($etat['niveau'] === 'alarme', 'le délai court toujours, obtenu ' . $etat['niveau']);
+});
+
+scenario('Horloge revenue en arrière : le délai de sortie n\'est pas prolongé', function () {
+    list($etat, $d) = rejouer(array(array(5000, armer()), array(1400, capteur(3))));
+    verifier($etat['niveau'] === 'alarme', 'alarme attendue, obtenu ' . $etat['niveau']);
 });
 
 scenario('Commande disparue : un défaut, puis un retour', function () {

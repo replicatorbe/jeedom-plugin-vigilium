@@ -1,5 +1,24 @@
 # Changelog Vigilium
 
+## 0.2 — corrections de la campagne d'observation
+
+- Passer de total à nuit garde l'incident en cours et n'exclut plus le capteur
+  forcé ; le délai de sortie ne repart pas.
+- Une porte ouverte pendant le délai de sortie et laissée ouverte lance le
+  délai d'entrée à la fin de la sortie. Délai de sortie propre au mode nuit.
+- À l'armement, sabotages en cours et capteurs muets sont rappelés.
+- La centrale ne confirme plus sa propre alarme, n'est jamais exclue, et ses
+  alarmes hors armement (incendie, panique, contrainte) sont journalisées.
+- Désarmement juste après la fin du délai d'entrée : alarme notée « annulée ».
+- Mode relu sous verrou (plus de réarmement sur une valeur périmée), « Armé
+  partiel » reconnu, sabotages et alarmes de centrale restés en cours
+  rattrapés par le cron, repos des suspicions glissant, horloge revenue en
+  arrière sans effet sur le délai de sortie, acquittement refusé pendant le
+  délai d'entrée, journal en clair.
+- Interface : chargement sûr (plus de risque d'effacer les capteurs), valeur
+  actuelle de chaque capteur avec son verdict, filtre du journal, erreurs
+  affichées, réglages de délai de sortie nuit et d'annulation.
+
 ## 0.1 — version d'observation
 
 - Suivi du mode d'une centrale existante (désarmé, total, nuit).

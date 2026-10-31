@@ -42,6 +42,12 @@ class vigilium extends eqLogic {
     public function postSave() {
         $this->createCommands();
         $this->syncListener();
+        /* Désactivée, l'alarme oublie son état : réactivée des heures plus
+         * tard, un délai d'entrée laissé en cours lèverait sinon une alarme
+         * au premier battement. */
+        if ($this->getIsEnable() != 1 && file_exists($this->fichierEtat())) {
+            @unlink($this->fichierEtat());
+        }
     }
 
     public function preRemove() {
@@ -78,6 +84,13 @@ class vigilium extends eqLogic {
                 $cmd->setSubType($definition[2]);
                 $cmd->setOrder($ordre);
                 $cmd->setIsVisible(1);
+                $cmd->save();
+            }
+            /* Deux décisions de même texte — une seconde suspicion après le
+             * repos — sont deux événements : sans cela, la seconde ne
+             * déclencherait aucun scénario. */
+            if ($logicalId === 'evenement' && $cmd->getConfiguration('repeatEventManagement', 'auto') !== 'always') {
+                $cmd->setConfiguration('repeatEventManagement', 'always');
                 $cmd->save();
             }
             $ordre++;
@@ -173,18 +186,32 @@ class vigilium extends eqLogic {
      * l'on a désigné la même commande (sans objet, mais sans danger).
      */
     public function recevoir($_cmdId, $_valeur) {
-        $evenements = array();
-        if ($_cmdId > 0 && $_cmdId === (int) $this->getConfiguration('cmd_mode', 0)) {
-            $evenements[] = $this->evenementMode($_valeur);
-        }
+        $estMode = ($_cmdId > 0 && $_cmdId === (int) $this->getConfiguration('cmd_mode', 0));
+        $capteurs = array();
         foreach ($this->capteursConfigures() as $capteur) {
             if ((int) $capteur['cmd'] === $_cmdId) {
-                $evenements[] = array('type' => 'capteur', 'id' => $_cmdId, 'alerte' => self::enAlerte($capteur, $_valeur));
+                $capteurs[] = array('type' => 'capteur', 'id' => $_cmdId, 'alerte' => self::enAlerte($capteur, $_valeur));
             }
         }
-        if (count($evenements) > 0) {
-            $this->appliquer($evenements);
+        if (!$estMode && count($capteurs) == 0) {
+            return;
         }
+        /* Le mode est RELU sous le verrou, et non pris dans l'événement :
+         * chaque événement de l'écouteur part dans son propre processus, et
+         * « Armé » puis « Désarmé » rapprochés peuvent prendre le verrou dans
+         * le désordre. La valeur courante, elle, est toujours la bonne. Un
+         * capteur garde au contraire sa valeur d'événement : une impulsion de
+         * caméra est déjà retombée quand on la relit. */
+        $this->appliquer(function () use ($estMode, $capteurs) {
+            $evenements = array();
+            if ($estMode) {
+                $evenement = $this->evenementModeCourant();
+                if ($evenement !== null) {
+                    $evenements[] = $evenement;
+                }
+            }
+            return array_merge($evenements, $capteurs);
+        });
     }
 
     /* ================================================================= CRON */
@@ -207,20 +234,31 @@ class vigilium extends eqLogic {
 
     public function battement() {
         $this->verifierEcouteur();
+        /* Tout est lu sous le verrou, mode compris : un mode lu avant, puis
+         * appliqué après un désarmement traité entre-temps par l'écouteur,
+         * réarmerait l'alarme avec une valeur périmée. */
+        $this->appliquer(function () {
+            return $this->evenementsBattement();
+        });
+    }
+
+    private function evenementsBattement() {
         $evenements = array();
-        $mode = (int) $this->getConfiguration('cmd_mode', 0);
-        $cmdMode = ($mode > 0) ? cmd::byId($mode) : null;
-        if (is_object($cmdMode)) {
-            $evenements[] = $this->evenementMode($cmdMode->execCmd());
+        $evenement = $this->evenementModeCourant();
+        if ($evenement !== null) {
+            $evenements[] = $evenement;
         }
         $evenements[] = array('type' => 'tick');
         $maintenant = time();
-        $exclus = $this->lireEtat()['exclus'];
+        $etat = $this->lireEtat();
         foreach ($this->capteursConfigures() as $capteur) {
             $id = (int) $capteur['cmd'];
             $cmd = cmd::byId($id);
-            $evenements[] = array('type' => 'disparu', 'id' => $id, 'disparu' => !is_object($cmd));
-            if (!is_object($cmd)) {
+            /* Une commande action désignée comme capteur serait EXÉCUTÉE par
+             * execCmd() à chaque lecture : elle compte comme introuvable. */
+            $utilisable = is_object($cmd) && $cmd->getType() === 'info';
+            $evenements[] = array('type' => 'disparu', 'id' => $id, 'disparu' => !$utilisable);
+            if (!$utilisable) {
                 continue;
             }
             $muet = $this->capteurMuet($capteur, $maintenant);
@@ -232,11 +270,25 @@ class vigilium extends eqLogic {
              * l'écouteur — valeur jamais renvoyée, événements traités dans le
              * désordre : la valeur courante est donc relue ici. Seul le repos
              * est injecté ; rejouer une alerte chaque minute serait faux. */
-            if (!empty($exclus[$id]) && !self::enAlerte($capteur, $cmd->execCmd())) {
+            /* Même rattrapage pour un sabotage ou une alarme de centrale restés
+             * « en cours » : leur retour à 0 a pu être traité avant leur 1. */
+            $enCours = !empty($etat['exclus'][$id]) || !empty($etat['defauts']['sabotage-' . $id]) || !empty($etat['defauts']['centrale-' . $id]);
+            if ($enCours && !self::enAlerte($capteur, $cmd->execCmd())) {
                 $evenements[] = array('type' => 'capteur', 'id' => $id, 'alerte' => false);
             }
         }
-        $this->appliquer($evenements);
+        return $evenements;
+    }
+
+    /* L'événement de mode tiré de la valeur actuelle de la centrale, ou null
+     * si aucune commande de mode n'est désignée. */
+    private function evenementModeCourant() {
+        $mode = (int) $this->getConfiguration('cmd_mode', 0);
+        $cmdMode = ($mode > 0) ? cmd::byId($mode) : null;
+        if (!is_object($cmdMode) || $cmdMode->getType() !== 'info') {
+            return null;
+        }
+        return $this->evenementMode($cmdMode->execCmd());
     }
 
     /*
@@ -295,7 +347,7 @@ class vigilium extends eqLogic {
         if ($enLigne > 0) {
             $supervise = true;
             $cmd = cmd::byId($enLigne);
-            if (is_object($cmd) && (string) $cmd->execCmd() === '0') {
+            if (is_object($cmd) && $cmd->getType() === 'info' && (string) $cmd->execCmd() === '0') {
                 return true;
             }
         }
@@ -308,6 +360,9 @@ class vigilium extends eqLogic {
      * Fait passer une suite d'événements dans le moteur, sous verrou : le
      * cron et l'écouteur tournent dans des processus distincts, et deux
      * lectures-écritures croisées de l'état perdraient un délai d'entrée.
+     *
+     * $_evenements : un tableau, ou une fonction qui le construit une fois le
+     * verrou pris — pour ce qui doit être lu au même instant que l'état.
      */
     public function appliquer($_evenements) {
         $verrou = fopen($this->fichierVerrou(), 'c');
@@ -318,14 +373,12 @@ class vigilium extends eqLogic {
             if (!flock($verrou, LOCK_EX)) {
                 throw new Exception(__('Verrou impossible à poser', __FILE__));
             }
+            $evenements = is_callable($_evenements) ? call_user_func($_evenements) : $_evenements;
             $etat = $this->lireEtat();
-            /* La configuration et les valeurs des capteurs à l'armement sont
-             * lues avant le verrou, par evenementMode() : un écart d'une
-             * fraction de seconde, sans conséquence sur la décision. */
             $config = $this->configMoteur();
             $maintenant = time();
             $toutes = array();
-            foreach ($_evenements as $evenement) {
+            foreach ($evenements as $evenement) {
                 list($etat, $decisions) = vigiliumMoteur::traiter($etat, $config, $evenement, $maintenant);
                 foreach ($decisions as $decision) {
                     $toutes[] = $decision;
@@ -336,10 +389,12 @@ class vigilium extends eqLogic {
             flock($verrou, LOCK_UN);
             fclose($verrou);
         }
+        /* L'état d'abord, la décision ensuite : un scénario déclenché par
+         * « Dernier événement » doit lire le niveau qui va avec. */
+        $this->publier($etat, $config);
         foreach ($toutes as $decision) {
             $this->decider($decision);
         }
-        $this->publier($etat, $config);
     }
 
     /*
@@ -377,7 +432,9 @@ class vigilium extends eqLogic {
         foreach (array_keys($_etat['exclus']) as $id) {
             $exclus[] = isset($_config['capteurs'][$id]) ? $_config['capteurs'][$id]['nom'] : ('#' . $id);
         }
-        $this->checkAndUpdateCmd('exclus', implode(', ', $exclus));
+        /* Jamais vide : checkAndUpdateCmd() relance l'événement à chaque appel
+         * quand l'ancienne valeur est une chaîne vide, soit une fois par minute. */
+        $this->checkAndUpdateCmd('exclus', count($exclus) > 0 ? implode(', ', $exclus) : __('aucun', __FILE__));
         $this->checkAndUpdateCmd('muets', count($_etat['muets']));
     }
 
@@ -412,6 +469,8 @@ class vigilium extends eqLogic {
         return vigiliumMoteur::normaliserConfig(array(
             'delai_entree' => $this->getConfiguration('delai_entree', ''),
             'delai_sortie' => $this->getConfiguration('delai_sortie', ''),
+            'delai_sortie_nuit' => $this->getConfiguration('delai_sortie_nuit', ''),
+            'annulation' => $this->getConfiguration('annulation', ''),
             'fenetre' => $this->getConfiguration('fenetre', ''),
             'repos_suspicion' => $this->getConfiguration('repos_suspicion', ''),
             'capteurs' => $this->capteursConfigures(),
@@ -430,10 +489,13 @@ class vigilium extends eqLogic {
         foreach (array(
             vigiliumMoteur::MODE_TOTAL => $this->valeurMode('valeur_total'),
             vigiliumMoteur::MODE_NUIT => $this->valeurMode('valeur_nuit'),
+            /* L'armement partiel (groupes) d'Ajax : un périmètre réduit, lu
+             * comme le mode nuit. */
+            'partiel' => $this->valeurMode('valeur_partiel'),
             vigiliumMoteur::MODE_DESARME => $this->valeurMode('valeur_desarme'),
         ) as $candidat => $attendue) {
             if ($valeur === mb_strtolower($attendue)) {
-                $mode = $candidat;
+                $mode = ($candidat === 'partiel') ? vigiliumMoteur::MODE_NUIT : $candidat;
                 break;
             }
         }
@@ -445,16 +507,21 @@ class vigilium extends eqLogic {
         if ($mode === null) {
             return array('type' => 'mode_inconnu', 'valeur' => (string) $_valeur);
         }
+        /* L'état de chaque capteur, et depuis quand il est en alerte : une
+         * fenêtre exclue « depuis le 29/09 » est un capteur à réparer. */
         $alertes = array();
-        if ($mode !== vigiliumMoteur::MODE_DESARME) {
-            foreach ($this->capteursConfigures() as $capteur) {
-                $cmd = cmd::byId((int) $capteur['cmd']);
-                if (is_object($cmd)) {
-                    $alertes[(int) $capteur['cmd']] = self::enAlerte($capteur, $cmd->execCmd());
+        $depuis = array();
+        foreach ($this->capteursConfigures() as $capteur) {
+            $cmd = cmd::byId((int) $capteur['cmd']);
+            if (is_object($cmd) && $cmd->getType() === 'info') {
+                $id = (int) $capteur['cmd'];
+                $alertes[$id] = self::enAlerte($capteur, $cmd->execCmd());
+                if ($alertes[$id] && $cmd->getValueDate() != '') {
+                    $depuis[$id] = (int) strtotime($cmd->getValueDate());
                 }
             }
         }
-        return array('type' => 'mode', 'mode' => $mode, 'alertes' => $alertes);
+        return array('type' => 'mode', 'mode' => $mode, 'alertes' => $alertes, 'depuis' => $depuis);
     }
 
     /*
@@ -462,7 +529,7 @@ class vigilium extends eqLogic {
      * champ laissé vide ne doit pas rendre l'alarme incapable de s'armer.
      */
     public function valeurMode($_cle) {
-        $defauts = array('valeur_total' => 'Armé', 'valeur_nuit' => 'Mode nuit', 'valeur_desarme' => 'Désarmé');
+        $defauts = array('valeur_total' => 'Armé', 'valeur_nuit' => 'Mode nuit', 'valeur_partiel' => 'Armé partiel', 'valeur_desarme' => 'Désarmé');
         $valeur = trim((string) $this->getConfiguration($_cle, ''));
         return ($valeur === '') ? $defauts[$_cle] : $valeur;
     }
