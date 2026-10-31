@@ -246,6 +246,58 @@ scenario('Sirènes : ligne retirée pendant son retard — elle démarre quand m
     verifier(count($plan) === 1 && $plan[0]['marche'] === 20, 'la sirène attendue démarre avec sa commande : ' . json_encode($plan));
 });
 
+scenario('Sirènes : la centrale parle APRÈS le contact — PANIC en attente annulé', function () use ($roles) {
+    list($plan, $etat) = vigiliumSorties::planifierSirenes(array(d('alarme', 'A', 1)), 'calme', 'alarme', 'total', null,
+        vigiliumSorties::nettoyerSirenes(array(array('nom' => 'PANIC', 'marche' => 30, 'retard' => 30, 'alarme' => 1, 'sauf_centrale' => 1))), $roles, 100);
+    list($plan, $etat) = vigiliumSorties::planifierSirenes(array(d('info', 'La centrale déclare aussi l\'alarme', 5)), 'alarme', 'alarme', 'total', $etat,
+        vigiliumSorties::nettoyerSirenes(array(array('nom' => 'PANIC', 'marche' => 30, 'retard' => 30, 'alarme' => 1, 'sauf_centrale' => 1))), $roles, 104);
+    verifier(count($etat['attentes']) === 0 && $etat['centrale'] === true, 'attente annulée : ' . json_encode($etat['attentes']));
+});
+
+scenario('Sirènes : sabotage puis intrusion — la durée repart pour l\'intrusion', function () use ($roles) {
+    $int = vigiliumSorties::nettoyerSirenes(array(array('nom' => 'Int', 'marche' => 10, 'arret' => 11, 'duree' => 180, 'alarme' => 1, 'sabotage' => 1)));
+    list($plan, $etat) = vigiliumSorties::planifierSirenes(array(d('sabotage', 'S', 6)), 'calme', 'calme', 'total', null, $int, $roles, 100);
+    verifier(sir($plan) === array('+0'), 'sabotage : ' . implode(',', sir($plan)));
+    list($plan, $etat) = vigiliumSorties::planifierSirenes(array(d('alarme', 'A', 1)), 'calme', 'alarme', 'total', $etat, $int, $roles, 270);
+    verifier($etat['sirenes'][0]['fin'] === 450 && $etat['sirenes'][0]['motif'] === 'alarme', 'durée repartie : ' . json_encode($etat['sirenes'][0]));
+});
+
+scenario('Sirènes : sabotage par impulsions — une seule sirène de sabotage par armement', function () use ($roles) {
+    list($plan, $etat) = vigiliumSorties::planifierSirenes(array(d('sabotage', 'S', 6)), 'calme', 'calme', 'nuit', null, sirenes(), $roles, 100);
+    list($plan, $etat) = vigiliumSorties::planifierSirenes(array(), 'calme', 'calme', 'nuit', $etat, sirenes(), $roles, 1100, true);
+    list($plan, $etat) = vigiliumSorties::planifierSirenes(array(d('sabotage', 'S', 6)), 'calme', 'calme', 'nuit', $etat, sirenes(), $roles, 1200);
+    verifier(sir($plan) === array(), 'pas de second départ pour un sabotage : ' . implode(',', sir($plan)));
+});
+
+scenario('Sirènes : nouvelle détection pendant une alarme restée sans réponse — les sirènes repartent', function () use ($roles) {
+    list($plan, $etat) = vigiliumSorties::planifierSirenes(array(d('alarme', 'A', 1)), 'calme', 'alarme', 'total', null, sirenes(), $roles, 100);
+    list($plan, $etat) = vigiliumSorties::planifierSirenes(array(), 'alarme', 'alarme', 'total', $etat, sirenes(), $roles, 400, true);
+    $nouvelle = d('alarme', 'Nouvelle détection', 1);
+    $nouvelle['nouvelle'] = true;
+    list($plan, $etat) = vigiliumSorties::planifierSirenes(array($nouvelle), 'alarme', 'alarme', 'total', $etat, sirenes(), $roles, 11000);
+    verifier(sir($plan) === array('+0', '+2'), 'obtenu ' . implode(',', sir($plan)));
+});
+
+scenario('Sirènes : horloge revenue en arrière — pas une heure de sirène', function () use ($roles) {
+    list($plan, $etat) = vigiliumSorties::planifierSirenes(array(d('alarme', 'A', 1)), 'calme', 'alarme', 'total', null, sirenes(), $roles, 5000);
+    list($plan, $etat) = vigiliumSorties::planifierSirenes(array(), 'alarme', 'alarme', 'total', $etat, sirenes(), $roles, 1400, true);
+    verifier(in_array('-0', sir($plan), true), 'arrêt attendu : ' . implode(',', sir($plan)));
+});
+
+scenario('Sirènes : nouvelles détections répétées — une remise en marche par heure au plus', function () use ($roles) {
+    list($plan, $etat) = vigiliumSorties::planifierSirenes(array(d('alarme', 'A', 1)), 'calme', 'alarme', 'total', null, sirenes(), $roles, 100);
+    list($plan, $etat) = vigiliumSorties::planifierSirenes(array(), 'alarme', 'alarme', 'total', $etat, sirenes(), $roles, 400, true);
+    $nouvelle = d('alarme', 'N', 1);
+    $nouvelle['nouvelle'] = true;
+    $departs = 0;
+    foreach (array(4000, 4400, 4800, 7700) as $t) {
+        list($plan, $etat) = vigiliumSorties::planifierSirenes(array($nouvelle), 'alarme', 'alarme', 'total', $etat, sirenes(), $roles, $t);
+        $departs += count(array_filter($plan, function ($_e) { return $_e['declencheur'] === 'sirene_marche'; }));
+        list($plan, $etat) = vigiliumSorties::planifierSirenes(array(), 'alarme', 'alarme', 'total', $etat, sirenes(), $roles, $t + 300, true);
+    }
+    verifier($departs === 4, 'deux remises en marche (2 sirènes chacune) sur ces quatre détections : ' . $departs);
+});
+
 scenario('Signal de vie : dû à l\'intervalle, jamais à zéro', function () {
     list($du, $etat) = vigiliumSorties::vieDue(null, 5, 1000);
     verifier($du === true, 'premier signal');

@@ -110,7 +110,7 @@ scenario('Retour normal : porte puis désarmement pendant le délai', function (
     verifier(compter($d, 'confirmee') === 0, 'aucune confirmation attendue');
 });
 
-scenario('Délai d\'entrée écoulé : alarme, confirmée par le couloir', function () {
+scenario('Délai d\'entrée écoulé : alarme, NON confirmée par le couloir du parcours, confirmée par une baie', function () {
     list($etat, $d) = rejouer(array(
         array(0, armer()),
         array(1000, capteur(1)),
@@ -118,9 +118,10 @@ scenario('Délai d\'entrée écoulé : alarme, confirmée par le couloir', funct
         array(1029, array('type' => 'tick')),
         array(1031, array('type' => 'tick')),
     ));
-    verifier($etat['niveau'] === 'confirmee', 'niveau confirmee attendu, obtenu ' . $etat['niveau']);
+    verifier($etat['niveau'] === 'alarme', 'le couloir de qui rentre ne confirme pas, obtenu ' . $etat['niveau']);
     verifier(compter($d, 'alarme') === 1, 'une alarme attendue');
-    verifier(compter($d, 'confirmee') === 1, 'une confirmation attendue');
+    list($etat, $d) = rejouer(array(array(1040, capteur(2))), null, $etat);
+    verifier($etat['niveau'] === 'confirmee', 'une baie (périmètre) confirme, obtenu ' . $etat['niveau']);
 });
 
 scenario('Délai d\'entrée écoulé, porte seule : alarme non confirmée', function () {
@@ -283,7 +284,7 @@ scenario('Délai de sortie : rien de ce qui est ignoré ne confirme ensuite', fu
 
 scenario('Délai échu entre deux battements : constaté au capteur suivant', function () {
     list($etat, $d) = rejouer(array(array(0, armer()), array(100, capteur(1)), array(145, capteur(3))));
-    verifier($etat['niveau'] === 'confirmee', 'alarme confirmée attendue, obtenu ' . $etat['niveau']);
+    verifier($etat['niveau'] === 'alarme', 'alarme attendue (le couloir ne confirme pas une alarme née du délai), obtenu ' . $etat['niveau']);
     verifier($d[2]['t'] === 145 && $d[2]['genre'] === 'alarme', 'l\'alarme est constatée à 145');
 });
 
@@ -292,11 +293,11 @@ scenario('Sabotage désarmé : signalé comme défaut', function () {
     verifier(genres($d) === array('defaut'), 'défaut attendu : ' . implode(',', genres($d)));
 });
 
-scenario('Caméra puis porte, délai échu : alarme confirmée par la caméra', function () {
+scenario('Caméra puis porte, délai échu : la caméra qui a vu arriver ne confirme pas', function () {
     list($etat, $d) = rejouer(array(
         array(0, armer()), array(500, capteur(4)), array(520, capteur(1)), array(551, array('type' => 'tick')),
     ));
-    verifier($etat['niveau'] === 'confirmee', 'confirmée attendue, obtenu ' . $etat['niveau']);
+    verifier($etat['niveau'] === 'alarme', 'alarme simple attendue, obtenu ' . $etat['niveau']);
 });
 
 scenario('Acquittement : les alertes d\'avant ne confirment plus', function () {
@@ -322,8 +323,9 @@ scenario('Capteur retiré de la configuration : oublié des muets et des exclus'
 scenario('Sabotage répété : une décision par épisode, close au repos', function () {
     list($etat, $d) = rejouer(array(
         array(0, armer()), array(100, capteur(6)), array(105, capteur(6)), array(110, capteur(6, false)), array(200, capteur(6)),
+        array(210, capteur(6, false)), array(331, array('type' => 'tick')), array(400, capteur(6)),
     ));
-    verifier(genres($d) === array('info', 'sabotage', 'info', 'sabotage'), 'suite inattendue : ' . implode(',', genres($d)));
+    verifier(genres($d) === array('info', 'sabotage', 'info', 'sabotage'), 'impulsions rapprochées = un épisode, clos après 2 min de calme : ' . implode(',', genres($d)));
     list($etat, $d) = rejouer(array(array(100, capteur(6)), array(105, capteur(6))));
     verifier(genres($d) === array('defaut'), 'un seul défaut désarmé : ' . implode(',', genres($d)));
 });
@@ -397,6 +399,64 @@ scenario('Repos des suspicions plus long que la fenêtre : respecté', function 
     $config['repos_suspicion'] = 1800;
     list($etat, $d) = rejouer(array(array(0, armer()), array(500, capteur(4)), array(900, array('type' => 'tick')), array(1200, capteur(4)), array(2400, capteur(4))), $config);
     verifier(compter($d, 'suspicion') === 1, 'une seule suspicion pendant 30 min de repos : ' . compter($d, 'suspicion'));
+});
+
+scenario('Alarme confirmée sans réponse, intrusion 3 h après : nouvelle détection', function () {
+    list($etat, $d) = rejouer(array(
+        array(0, armer()), array(1000, capteur(2)), array(1010, capteur(4)),
+        array(12000, capteur(7)), array(12010, capteur(3)), array(12020, capteur(5)),
+    ));
+    $nouvelles = array_values(array_filter($d, function ($_d) { return !empty($_d['nouvelle']); }));
+    verifier(count($nouvelles) === 1 && $nouvelles[0]['capteur'] === 7, 'une nouvelle détection (fenêtre chambre), pas trois : ' . json_encode($nouvelles));
+});
+
+scenario('Confirmation hors fenêtre : pas une confirmation, une nouvelle détection', function () {
+    list($etat, $d) = rejouer(array(array(0, armer()), array(1000, capteur(2)), array(1400, capteur(3))));
+    verifier($etat['niveau'] === 'alarme' && compter($d, 'confirmee') === 0, 'pas de confirmation 400 s après, obtenu ' . $etat['niveau']);
+    verifier(compter($d, 'alarme') === 2, 'le couloir est une nouvelle détection');
+});
+
+scenario('La centrale déclare aussi l\'alarme : écrit, pour retenir PANIC', function () {
+    list($etat, $d) = rejouer(array(array(0, armer()), array(1000, capteur(2)), array(1004, capteur(5))));
+    $dernier = end($d);
+    verifier($dernier['genre'] === 'info' && $dernier['capteur'] === 5, 'décision de la centrale attendue : ' . json_encode($dernier));
+});
+
+scenario('Mode inconnu : défaut à chaque nouvelle valeur, désarmé après 10 min', function () {
+    list($etat, $d) = rejouer(array(
+        array(0, armer()),
+        array(100, array('type' => 'mode_inconnu', 'valeur' => 'Armed')),
+        array(160, array('type' => 'mode_inconnu', 'valeur' => 'Armed')),
+        array(200, array('type' => 'mode_inconnu', 'valeur' => 'Disarmed')),
+        array(699, array('type' => 'tick')),
+    ));
+    verifier(compter($d, 'defaut') === 2 && $etat['mode'] === 'total', 'deux valeurs, deux défauts, encore armé : ' . implode(',', genres($d)));
+    list($etat, $d) = rejouer(array(array(701, array('type' => 'tick')), array(800, capteur(1))), null, $etat);
+    verifier($etat['mode'] === 'desarme' && compter($d, 'alarme') === 0, 'désarmé après 10 min, pas d\'alarme au retour : ' . $etat['mode']);
+    verifier(compter($d, 'sabotage') === 1, 'le désarmement forcé est une alerte (sabotage)');
+});
+
+scenario('Désarmé longtemps après l\'ouverture, sans battement : dit autrement qu\'un retour normal', function () {
+    list($etat, $d) = rejouer(array(array(0, armer()), array(1000, capteur(1)), array(1400, armer('desarme'))));
+    $dernier = end($d);
+    verifier(strpos($dernier['detail'], 'bien après') !== false, 'message attendu : ' . $dernier['detail']);
+});
+
+scenario('Alarme sans réponse : une caméra (le chat) ne rouvre jamais l\'alarme', function () {
+    list($etat, $d) = rejouer(array(array(0, armer()), array(1000, capteur(2)), array(5000, capteur(4)), array(5400, capteur(4)), array(9000, capteur(4))));
+    verifier(count(array_filter($d, function ($_d) { return !empty($_d['nouvelle']); })) === 0, 'aucune nouvelle détection par la caméra');
+});
+
+scenario('Intrusion par la porte : le couloir confirme 30 s après la fin du délai, pas avant', function () {
+    list($etat, $d) = rejouer(array(array(0, armer()), array(1000, capteur(1)), array(1031, array('type' => 'tick')), array(1040, capteur(3))));
+    verifier($etat['niveau'] === 'alarme', 'trop tôt : pas de confirmation, obtenu ' . $etat['niveau']);
+    list($etat, $d) = rejouer(array(array(0, armer()), array(1000, capteur(1)), array(1031, array('type' => 'tick')), array(1070, capteur(3))));
+    verifier($etat['niveau'] === 'confirmee', 'couloir 39 s après : confirmée, obtenu ' . $etat['niveau']);
+});
+
+scenario('Alarme née du délai : une caméra ne la confirme jamais', function () {
+    list($etat, $d) = rejouer(array(array(0, armer()), array(1000, capteur(1)), array(1031, array('type' => 'tick')), array(1100, capteur(4))));
+    verifier($etat['niveau'] === 'alarme', 'le chat ne confirme pas, obtenu ' . $etat['niveau']);
 });
 
 scenario('Commande disparue : un défaut, puis un retour', function () {

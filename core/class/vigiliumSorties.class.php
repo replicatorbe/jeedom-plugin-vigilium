@@ -47,13 +47,17 @@ class vigiliumSorties {
     const AVEC_PHOTOS = array('suspicion', 'alarme', 'confirmee');
 
     public static function etatInitial() {
-        return array('relance' => null, 'sirenes' => array(), 'attentes' => array(), 'faites' => array(), 'centrale' => false, 'vie' => 0);
+        return array('relance' => null, 'sirenes' => array(), 'attentes' => array(), 'faites' => array(), 'centrale' => false, 'vie' => 0, 'remise' => 0);
     }
 
     const SIRENE_DUREE_DEFAUT = 180;
     const SIRENE_DUREE_MAX = 900;
     const SIRENE_RETARD_MAX = 600;
     const SIRENE_ESSAI = 3;
+
+    /* Intervalle minimal entre deux remises en marche des sirènes pour une
+     * nouvelle détection, pendant une même alarme sans réponse. */
+    const REMISE_SIRENES_MIN = 3600;
 
     /*
      * Les sirènes telles que le planificateur les lit. Une sirène sans
@@ -147,10 +151,11 @@ class vigiliumSorties {
             $etat['faites'] = array();
             $etat['centrale'] = false;
         };
-        $marche = function ($_index, $_sirene, $_detail, $_capteur) use (&$etat, &$plan, $_t, $observation) {
+        $marche = function ($_index, $_sirene, $_detail, $_capteur, $_motif) use (&$etat, &$plan, $_t, $observation) {
             $etat['sirenes'][$_index] = array('fin' => $_t + $_sirene['duree'], 'arret' => $_sirene['arret'],
-                                              'nom' => $_sirene['nom'], 'reelle' => !$observation);
-            $etat['faites'][$_index] = true;
+                                              'nom' => $_sirene['nom'], 'reelle' => !$observation,
+                                              'duree' => $_sirene['duree'], 'motif' => $_motif);
+            $etat['faites'][($_motif === 'sabotage' ? 's:' : '') . $_index] = true;
             $plan[] = array('declencheur' => 'sirene_marche', 'sirene' => (int) $_index, 'nom' => $_sirene['nom'],
                             'marche' => $_sirene['marche'], 'arret' => $_sirene['arret'], 'duree' => $_sirene['duree'],
                             'reelle' => !$observation, 'detail' => $_detail, 'capteur' => $_capteur);
@@ -163,20 +168,11 @@ class vigiliumSorties {
 
         foreach (is_array($_decisions) ? $_decisions : array() as $decision) {
             $genre = isset($decision['genre']) ? $decision['genre'] : '';
-            if (!in_array($genre, array('alarme', 'confirmee', 'sabotage'), true)) {
-                continue;
-            }
-            /* Une alarme de centrale reçue désarmée (incendie, panique) ne fait
-             * pas monter le niveau : rien n'arrêterait ces sirènes-là, sinon
-             * leur durée. Les sirènes de la centrale, elles, sonnent déjà. */
-            if ($genre === 'alarme' && !$enAlarme($_apres)) {
-                continue;
-            }
             $capteur = isset($decision['capteur']) ? (int) $decision['capteur'] : 0;
             $role = isset($_roles[$capteur]) ? $_roles[$capteur] : '';
-            if ($genre === 'sabotage' && $role !== 'sabotage') {
-                continue;
-            }
+            /* Toute décision de la centrale pendant une alarme — y compris
+             * l'information « elle déclare aussi l'alarme », quand elle parle
+             * après le contact — retient les sirènes « sauf centrale ». */
             if ($role === 'centrale' && $enAlarme($_apres)) {
                 $etat['centrale'] = true;
                 foreach (array_keys($etat['attentes']) as $index) {
@@ -187,21 +183,56 @@ class vigiliumSorties {
                     }
                 }
             }
+            if (!in_array($genre, array('alarme', 'confirmee', 'sabotage'), true)) {
+                continue;
+            }
+            /* Une alarme de centrale reçue désarmée (incendie, panique) ne fait
+             * pas monter le niveau : rien n'arrêterait ces sirènes-là, sinon
+             * leur durée. Les sirènes de la centrale, elles, sonnent déjà. */
+            if ($genre === 'alarme' && !$enAlarme($_apres)) {
+                continue;
+            }
+            if ($genre === 'sabotage' && $role !== 'sabotage') {
+                continue;
+            }
+            /* Une nouvelle détection pendant une alarme restée sans réponse :
+             * les sirènes arrivées au bout de leur durée peuvent repartir. */
+            /* Au plus une fois par heure : une alarme laissée sans réponse ne
+             * doit pas faire sonner le quartier en boucle. */
+            if (!empty($decision['nouvelle']) && $_t - (int) (isset($etat['remise']) ? $etat['remise'] : 0) >= self::REMISE_SIRENES_MIN) {
+                $etat['remise'] = $_t;
+                foreach (array_keys($etat['faites']) as $fait) {
+                    if (strpos((string) $fait, 's:') !== 0 && !isset($etat['sirenes'][(int) $fait])) {
+                        unset($etat['faites'][$fait]);
+                    }
+                }
+            }
+            $motif = ($genre === 'sabotage') ? 'sabotage' : 'alarme';
             foreach ($_sirenes as $index => $sirene) {
                 if (empty($sirene[$genre]) || ($sirene['sauf_centrale'] && !empty($etat['centrale']))) {
                     continue;
                 }
-                if (isset($etat['sirenes'][$index]) || isset($etat['attentes'][$index]) || !empty($etat['faites'][$index])) {
+                /* Déjà en marche pour un sabotage, elle passe à l'alarme : sa
+                 * durée repart de maintenant, l'intrusion a droit à la sienne. */
+                if ($motif === 'alarme' && isset($etat['sirenes'][$index]) && is_array($etat['sirenes'][$index])
+                    && isset($etat['sirenes'][$index]['motif']) && $etat['sirenes'][$index]['motif'] === 'sabotage') {
+                    $etat['sirenes'][$index]['fin'] = $_t + $sirene['duree'];
+                    $etat['sirenes'][$index]['motif'] = 'alarme';
+                    $etat['faites'][$index] = true;
+                    continue;
+                }
+                $fait = ($motif === 'sabotage' ? 's:' : '') . $index;
+                if (isset($etat['sirenes'][$index]) || isset($etat['attentes'][$index]) || !empty($etat['faites'][$fait])) {
                     continue;
                 }
                 /* La sirène attendue est gardée telle quelle : retirer une ligne
                  * pendant son retard ne doit pas en faire démarrer une autre. */
                 if ($sirene['retard'] > 0) {
                     $etat['attentes'][$index] = array('debut' => $_t + $sirene['retard'], 'detail' => (string) $decision['detail'],
-                                                      'capteur' => $capteur, 'sirene' => $sirene);
+                                                      'capteur' => $capteur, 'sirene' => $sirene, 'motif' => $motif);
                     continue;
                 }
-                $marche($index, $sirene, (string) $decision['detail'], $capteur);
+                $marche($index, $sirene, (string) $decision['detail'], $capteur, $motif);
             }
         }
 
@@ -216,11 +247,14 @@ class vigiliumSorties {
                 if ($sirene === null) {
                     continue;
                 }
-                $marche($index, $sirene, $attente['detail'], (int) $attente['capteur']);
+                $marche($index, $sirene, $attente['detail'], (int) $attente['capteur'], isset($attente['motif']) ? $attente['motif'] : 'alarme');
             }
             foreach ($etat['sirenes'] as $index => $enMarche) {
                 $fin = is_array($enMarche) ? (int) $enMarche['fin'] : (int) $enMarche;
-                if ($_t >= $fin) {
+                /* Une horloge revenue en arrière ne doit pas prolonger la
+                 * sirène : une fin plus lointaine que sa durée l'arrête aussi. */
+                $duree = (is_array($enMarche) && isset($enMarche['duree'])) ? (int) $enMarche['duree'] : self::SIRENE_DUREE_MAX;
+                if ($_t >= $fin || $fin - $_t > $duree + 60) {
                     $plan[] = $arret($index, 'Durée maximale atteinte');
                     unset($etat['sirenes'][$index]);
                 }
@@ -228,8 +262,15 @@ class vigiliumSorties {
         }
         /* Plus d'alarme en cours : la mémoire de l'incident repart à zéro
          * quand plus rien ne sonne ni n'attend. */
+        /* La mémoire « sabotage » (s:…), elle, ne repart qu'au désarmement : une
+         * sirène de sabotage sonne une fois par armement, pas à chaque
+         * impulsion d'une caméra masquée. */
         if (!$enAlarme($_apres) && count($etat['sirenes']) == 0 && count($etat['attentes']) == 0) {
-            $etat['faites'] = array();
+            foreach (array_keys($etat['faites']) as $fait) {
+                if (strpos((string) $fait, 's:') !== 0) {
+                    unset($etat['faites'][$fait]);
+                }
+            }
             $etat['centrale'] = false;
         }
         return array($plan, $etat);

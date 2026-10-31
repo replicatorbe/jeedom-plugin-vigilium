@@ -21,7 +21,10 @@ require_once __DIR__ . '/../../../core/php/core.inc.php';
  * l'autoload ne chargerait plus sa classe. */
 require_once __DIR__ . '/../core/class/vigilium.class.php';
 
+/* À l'activation aussi : désactiver le plugin retire les écouteurs
+ * (vigilium_remove), le réactiver doit les reposer. */
 function vigilium_install() {
+    vigilium_update();
 }
 
 /*
@@ -48,17 +51,10 @@ function vigilium_remove() {
             log::add('vigilium', 'debug', __('Écouteur non retiré :', __FILE__) . ' ' . $e->getMessage());
         }
     }
-    /* Le journal d'une alarme raconte quand la maison est vide : il ne reste
-     * pas sur le disque après la désinstallation. Seuls les fichiers que le
-     * plugin écrit sont touchés. */
-    try {
-        $dossier = vigilium::dossierDonnees();
-        foreach (ls($dossier, '*', false, array('files', 'quiet')) as $fichier) {
-            if (preg_match('/^(?:journal|etat|sorties)-\d+\./', $fichier)) {
-                @unlink($dossier . '/' . $fichier);
-            }
-        }
-    } catch (Throwable $e) {
-        log::add('vigilium', 'debug', __('Fichiers non supprimés :', __FILE__) . ' ' . $e->getMessage());
-    }
+    /* Aucun fichier n'est effacé ici : le cœur appelle cette fonction à
+     * chaque DÉSACTIVATION du plugin, et pas seulement à la désinstallation —
+     * effacer ici ferait perdre le journal d'observation à une simple
+     * désactivation. Les fichiers d'une alarme supprimée partent avec elle
+     * (vigilium::preRemove), et ceux du plugin avec son dossier, à la
+     * désinstallation. */
 }

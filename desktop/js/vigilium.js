@@ -89,8 +89,17 @@ function vigiliumAjax(_action, _data, _success) {
     })
   }).then(_success).catch(function (erreur) {
     if (isset(erreur) && erreur !== null && erreur.name === 'AbortError') { return }
-    jeedomUtils.showAlert({ message: String(isset(erreur.message) ? erreur.message : erreur), level: 'danger', ttl: 15000 })
+    jeedomUtils.showAlert({ message: vigiliumEchapper(isset(erreur.message) ? erreur.message : erreur), level: 'danger', ttl: 15000 })
   })
+}
+
+/* Les messages affichés par jeedomUtils.showAlert sont du HTML : ce qui vient
+   du serveur ou de la saisie (noms de capteurs, messages d'exception) y entre
+   échappé. */
+function vigiliumEchapper(_texte) {
+  var div = document.createElement('div')
+  div.textContent = String(_texte)
+  return div.innerHTML
 }
 
 function vigiliumMarkModified() {
@@ -266,13 +275,13 @@ function vigiliumLireCapteurs() {
     })
   }
   if (incompletes.length > 0) {
-    jeedomUtils.showAlert({ message: '{{Capteurs ignorés par l\'alarme tant qu\'il leur manque une commande ou un rôle}} : ' + incompletes.join(', '), level: 'warning', ttl: 15000 })
+    jeedomUtils.showAlert({ message: '{{Capteurs ignorés par l\'alarme tant qu\'il leur manque une commande ou un rôle}} : ' + vigiliumEchapper(incompletes.join(', ')), level: 'warning', ttl: 15000 })
   }
   if (jamais.length > 0) {
-    jeedomUtils.showAlert({ message: '{{Capteurs surveillés dans aucun mode (ni Total ni Nuit)}} : ' + jamais.join(', '), level: 'warning', ttl: 15000 })
+    jeedomUtils.showAlert({ message: '{{Capteurs surveillés dans aucun mode (ni Total ni Nuit)}} : ' + vigiliumEchapper(jamais.join(', ')), level: 'warning', ttl: 15000 })
   }
   if (doublons.length > 0) {
-    jeedomUtils.showAlert({ message: '{{La même commande est désignée deux fois}} : ' + doublons.join(', '), level: 'warning', ttl: 15000 })
+    jeedomUtils.showAlert({ message: '{{La même commande est désignée deux fois}} : ' + vigiliumEchapper(doublons.join(', ')), level: 'warning', ttl: 15000 })
   }
   return capteurs
 }
@@ -445,14 +454,20 @@ function vigiliumAjouterPhoto(_camera) {
   vigiliumAfficherNomCommande(tr.querySelector('.vigiliumFichier'), init(camera.fichier, 0))
 }
 
+/* Une ligne sans commande de chemin est gardée — le serveur l'ignore — et
+   signalée, pour que la saisie ne disparaisse pas sans un mot. */
 function vigiliumLirePhotos() {
   var cameras = []
+  var incompletes = 0
   document.querySelectorAll('#table_vigiliumPhotos tbody tr.vigiliumPhoto').forEach(function (tr) {
     var capture = parseInt(tr.querySelector('.vigiliumCapture').getAttribute('data-cmd'), 10)
     var fichier = parseInt(tr.querySelector('.vigiliumFichier').getAttribute('data-cmd'), 10)
-    if (isNaN(fichier) || fichier <= 0) { return }
-    cameras.push({ capture: (isNaN(capture) || capture <= 0) ? 0 : capture, fichier: fichier })
+    if (isNaN(fichier) || fichier <= 0) { incompletes++ }
+    cameras.push({ capture: (isNaN(capture) || capture <= 0) ? 0 : capture, fichier: (isNaN(fichier) || fichier <= 0) ? 0 : fichier })
   })
+  if (incompletes > 0) {
+    jeedomUtils.showAlert({ message: incompletes + ' {{caméra(s) sans commande de chemin d\'image : ignorée(s) pour les photos.}}', level: 'warning', ttl: 15000 })
+  }
   return cameras
 }
 
@@ -759,7 +774,7 @@ vigiliumContainer.addEventListener('click', function (event) {
       if (!ok) { return }
       vigiliumAjax('testerSirene', { id: idSirene, index: index }, function (resultat) {
         if (resultat.echecs.length > 0) {
-          jeedomUtils.showAlert({ message: '{{Échec :}} ' + resultat.echecs.join(' ; '), level: 'danger', ttl: 15000 })
+          jeedomUtils.showAlert({ message: '{{Échec :}} ' + vigiliumEchapper(resultat.echecs.join(' ; ')), level: 'danger', ttl: 15000 })
         } else if (resultat.sans_arret) {
           jeedomUtils.showAlert({ message: '{{Sirène mise en marche. Sans commande d\'arrêt, elle s\'arrêtera d\'elle-même.}}', level: 'warning' })
         } else {
@@ -823,7 +838,7 @@ vigiliumContainer.addEventListener('click', function (event) {
         if (resultat.nombre === 0) {
           jeedomUtils.showAlert({ message: '{{Aucune réaction enregistrée pour ce déclencheur.}}', level: 'warning' })
         } else if (resultat.echecs.length > 0) {
-          jeedomUtils.showAlert({ message: '{{Échec :}} ' + resultat.echecs.join(' ; '), level: 'danger', ttl: 15000 })
+          jeedomUtils.showAlert({ message: '{{Échec :}} ' + vigiliumEchapper(resultat.echecs.join(' ; ')), level: 'danger', ttl: 15000 })
         } else {
           jeedomUtils.showAlert({ message: resultat.nombre + ' {{action(s) jouée(s).}}', level: 'success' })
         }

@@ -53,6 +53,12 @@ class vigilium extends eqLogic {
     /* ================================================================ CYCLE */
 
     public function postSave() {
+        /* Une alarme qu'on enregistre est vivante : un marqueur de suppression
+         * resté là (suppression qui a échoué, sauvegarde restaurée) est retiré. */
+        if (file_exists($this->fichierSuppression())) {
+            @unlink($this->fichierSuppression());
+            log::add(__CLASS__, 'warning', $this->getHumanName() . ' : ' . __('marqueur de suppression périmé retiré', __FILE__));
+        }
         $this->createCommands();
         $this->syncListener();
         /* Désactivée, l'alarme oublie son état : réactivée des heures plus
@@ -72,9 +78,15 @@ class vigilium extends eqLogic {
 
     public function preRemove() {
         self::$_suppression[(int) $this->getId()] = true;
+        /* Le marqueur sur disque est vu par les AUTRES processus — un écouteur
+         * ou le cron déjà lancés —, sous le verrou d'état : ils ne décident
+         * plus rien pour cette alarme. Les verrous eux-mêmes ne sont pas
+         * effacés : un processus qui attend dessus garderait un fichier que
+         * plus personne ne partage. */
+        @file_put_contents($this->fichierSuppression(), (string) time());
         $this->removeListener();
         $this->finHorsMoteur(__('Alarme supprimée pendant un incident', __FILE__));
-        foreach (array($this->fichierEtat(), $this->fichierJournal(), $this->fichierVerrou(), $this->fichierSorties(), $this->fichierVerrouExecution()) as $fichier) {
+        foreach (array($this->fichierEtat(), $this->fichierJournal(), $this->fichierSorties()) as $fichier) {
             if (file_exists($fichier)) {
                 @unlink($fichier);
             }
@@ -387,8 +399,9 @@ class vigilium extends eqLogic {
      * verrou pris — pour ce qui doit être lu au même instant que l'état.
      */
     public function appliquer($_evenements, $_battement = false) {
-        $verrou = fopen($this->fichierVerrou(), 'c');
+        $verrou = self::ouvrirVerrou($this->fichierVerrou());
         if ($verrou === false) {
+            $this->signalerEcriture($this->fichierVerrou());
             throw new Exception(__('Verrou impossible à créer', __FILE__));
         }
         try {
@@ -399,7 +412,8 @@ class vigilium extends eqLogic {
              * de l'alarme ne doit plus rien décider — ni lancer une sirène que
              * plus aucun battement n'arrêterait. */
             $frais = eqLogic::byId($this->getId());
-            if (!is_object($frais) || $frais->getIsEnable() != 1 || !empty(self::$_suppression[(int) $this->getId()])) {
+            if (!is_object($frais) || $frais->getIsEnable() != 1 || !empty(self::$_suppression[(int) $this->getId()])
+                || $this->suppressionEnCours()) {
                 return;
             }
             $evenements = is_callable($_evenements) ? call_user_func($_evenements) : $_evenements;
@@ -453,7 +467,10 @@ class vigilium extends eqLogic {
              * cela, un désarmement pourrait jouer « fin » — couper la sirène —
              * pendant qu'une alarme antérieure prend encore ses photos, puis
              * allumer la sirène après, et rien ne l'éteindrait plus. */
-            $execution = (count($plan) > 0) ? $this->prendreVerrouExecution() : null;
+            /* Au battement, attente courte : le cron de Jeedom passe les plugins
+             * l'un après l'autre, et Vigilium ne doit pas retenir les suivants.
+             * Les sirènes sont en tête du plan : l'ordre qui compte est tenu. */
+            $execution = (count($plan) > 0) ? $this->prendreVerrouExecution($_battement ? 3 : self::EXECUTION_ATTENTE_MAX) : null;
         } finally {
             flock($verrou, LOCK_UN);
             fclose($verrou);
@@ -461,7 +478,11 @@ class vigilium extends eqLogic {
         try {
             /* L'état d'abord, la décision ensuite : un scénario déclenché par
              * « Dernier événement » doit lire le niveau qui va avec. */
-            $this->publier($etat, $config);
+            try {
+                $this->publier($etat, $config);
+            } catch (Throwable $e) {
+                log::add(__CLASS__, 'error', $this->getHumanName() . ' : ' . $e->getMessage());
+            }
             foreach ($toutes as $decision) {
                 try {
                     $this->decider($decision);
@@ -489,21 +510,21 @@ class vigilium extends eqLogic {
      * retard vaut mieux qu'une sirène qui attend une notification bloquée.
      * Rend le descripteur à rendre, ou null s'il n'y a rien à rendre.
      */
-    private function prendreVerrouExecution() {
+    private function prendreVerrouExecution($_attente = self::EXECUTION_ATTENTE_MAX) {
         $id = (int) $this->getId();
         if (!empty(self::$_executionTenue[$id])) {
             return null;
         }
-        $verrou = @fopen($this->fichierVerrouExecution(), 'c');
+        $verrou = self::ouvrirVerrou($this->fichierVerrouExecution());
         if ($verrou === false) {
             return null;
         }
-        $limite = microtime(true) + self::EXECUTION_ATTENTE_MAX;
+        $limite = microtime(true) + $_attente;
         while (!flock($verrou, LOCK_EX | LOCK_NB)) {
             if (microtime(true) > $limite) {
                 fclose($verrou);
                 log::add(__CLASS__, 'warning', $this->getHumanName() . ' : '
-                    . __('réactions précédentes encore en cours après 30 s : celles-ci partent sans attendre', __FILE__));
+                    . sprintf(__('réactions précédentes encore en cours après %d s : celles-ci partent sans attendre', __FILE__), $_attente));
                 return null;
             }
             usleep(200000);
@@ -531,7 +552,7 @@ class vigilium extends eqLogic {
         }
         /* Sous le verrou d'état, comme le moteur : une sirène lancée par un
          * événement en cours de traitement est ainsi vue ici. */
-        $verrouEtat = @fopen($this->fichierVerrou(), 'c');
+        $verrouEtat = self::ouvrirVerrou($this->fichierVerrou());
         if ($verrouEtat !== false) {
             flock($verrouEtat, LOCK_EX);
         }
@@ -607,6 +628,12 @@ class vigilium extends eqLogic {
         $marche = array('echecs' => array());
         $arret = array('echecs' => array());
         $verrou = $this->prendreVerrouExecution();
+        /* Revu une fois le verrou pris : une alarme a pu la mettre en marche
+         * pendant qu'on attendait. */
+        if (isset($this->lireSorties()['sirenes'][$index])) {
+            $this->rendreVerrouExecution($verrou);
+            throw new Exception(__('Cette sirène sonne pour une alarme en cours : pas de test maintenant.', __FILE__));
+        }
         try {
             $marche = vigiliumSorties::executer($this, array_merge($entree, array('declencheur' => 'sirene_marche')), $etat, $config, false, true);
             sleep(vigiliumSorties::SIRENE_ESSAI);
@@ -625,7 +652,12 @@ class vigilium extends eqLogic {
         }
         $entree = array('declencheur' => $_declencheur, 'genre' => $_declencheur, 'capteur' => 0,
                         'detail' => '[' . __('Essai', __FILE__) . '] ' . __('essai des réactions', __FILE__) . ' « ' . $_declencheur . ' » ' . __('de', __FILE__) . ' ' . $this->getName());
-        return vigiliumSorties::executer($this, $entree, $this->lireEtat(), $this->configMoteur(), false, true);
+        $verrou = $this->prendreVerrouExecution();
+        try {
+            return vigiliumSorties::executer($this, $entree, $this->lireEtat(), $this->configMoteur(), false, true);
+        } finally {
+            $this->rendreVerrouExecution($verrou);
+        }
     }
 
     /*
@@ -824,7 +856,51 @@ class vigilium extends eqLogic {
         $json = json_encode($_etat, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
         if ($json === false || file_put_contents($temporaire, $json) === false || !rename($temporaire, $fichier)) {
             log::add(__CLASS__, 'error', $this->getHumanName() . ' : ' . __('état des réactions (relances, sirènes en marche) non enregistré dans', __FILE__) . ' ' . $fichier);
+            $this->signalerEcriture($fichier);
         }
+    }
+
+    /*
+     * Ouvre un fichier de verrou. flock() n'a pas besoin d'écrire : un verrou
+     * créé par un autre utilisateur (un essai en ligne de commande) et non
+     * inscriptible par www-data s'ouvre encore en lecture — sans cela,
+     * l'alarme lèverait une exception à chaque événement et deviendrait muette.
+     * Créé ici, il est laissé inscriptible par le groupe.
+     */
+    private static function ouvrirVerrou($_fichier) {
+        $existait = file_exists($_fichier);
+        $verrou = @fopen($_fichier, 'c');
+        if ($verrou === false) {
+            $verrou = @fopen($_fichier, 'r');
+        } elseif (!$existait) {
+            @chmod($_fichier, 0664);
+        }
+        return $verrou;
+    }
+
+    /* L'état ne peut pas être écrit : dit une fois par heure au centre de
+     * messages, où on le voit — le journal du plugin, lui, peut être éteint. */
+    private function signalerEcriture($_fichier) {
+        $cle = 'vigilium::ecriture::' . (int) $this->getId();
+        if (cache::byKey($cle)->getValue(0) > time() - 3600) {
+            return;
+        }
+        cache::set($cle, time());
+        message::add('vigilium', $this->getHumanName() . ' : ' . __('impossible d\'écrire', __FILE__) . ' ' . $_fichier
+            . ' — ' . __('l\'alarme ne peut plus suivre son état. Vérifiez les droits du dossier data du plugin (www-data doit pouvoir y écrire).', __FILE__));
+    }
+
+    /* Le marqueur de suppression ne vaut que le temps de la suppression : au-
+     * delà de 10 minutes, il est le reste d'une suppression qui a échoué (ou
+     * d'une sauvegarde restaurée), et l'alarme, toujours en base, ne doit pas
+     * rester muette pour lui. */
+    private function suppressionEnCours() {
+        $fichier = $this->fichierSuppression();
+        return file_exists($fichier) && time() - (int) @filemtime($fichier) < 600;
+    }
+
+    public function fichierSuppression() {
+        return self::dossierDonnees() . '/supprime-' . (int) $this->getId();
     }
 
     public function fichierVerrouExecution() {
@@ -853,6 +929,7 @@ class vigilium extends eqLogic {
             /* L'état précédent reste en place : l'incident n'est pas perdu, mais
              * cette décision-ci l'est, et il faut que cela se voie. */
             log::add(__CLASS__, 'error', $this->getHumanName() . ' : ' . __('état de l\'alarme non enregistré dans', __FILE__) . ' ' . $fichier);
+            $this->signalerEcriture($fichier);
         }
     }
 
@@ -861,6 +938,7 @@ class vigilium extends eqLogic {
         $fichier = $this->fichierJournal();
         if (file_put_contents($fichier, json_encode($_entree, JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE) . "\n", FILE_APPEND | LOCK_EX) === false) {
             log::add(__CLASS__, 'error', $this->getHumanName() . ' : ' . __('journal non écrit :', __FILE__) . ' ' . $fichier);
+            $this->signalerEcriture($fichier);
             return;
         }
         /* Réduction rare : un contrôle de taille à chaque ligne coûterait plus

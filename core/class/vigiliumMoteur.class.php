@@ -76,6 +76,22 @@ class vigiliumMoteur {
     const REPOS_SUSPICION_DEFAUT = 300;
     const ANNULATION_DEFAUT = 120;
 
+    /* Au-delà, une valeur de mode inconnue n'est plus lue comme « le mode
+     * d'avant » : l'alarme est considérée désarmée. Une centrale dont le
+     * libellé a changé ne doit pas laisser Vigilium armé pendant que la
+     * maison est désarmée, et faire sonner au retour. */
+    const INCONNU_MAX = 600;
+
+    /* Calme exigé avant de clore un épisode de sabotage : une caméra masquée
+     * envoie des impulsions, et chaque retour à 0 entre deux d'entre elles
+     * ne doit pas ouvrir un nouvel épisode — une notification et une sirène
+     * de plus à chaque fois. */
+    const REPOS_SABOTAGE = 120;
+
+    /* Voir confirmer() : après une alarme née du délai d'entrée, un détecteur
+     * intérieur ou une caméra ne confirme qu'à partir de ce délai. */
+    const CONFIRMATION_APRES_DELAI = 30;
+
     public static function roles() {
         return array(self::ROLE_ENTREE, self::ROLE_PERIMETRE, self::ROLE_INTERIEUR,
                      self::ROLE_EXTERIEUR, self::ROLE_CENTRALE, self::ROLE_SABOTAGE);
@@ -101,6 +117,9 @@ class vigiliumMoteur {
              * même désarmé : la fin du délai de sortie et le passage d'un mode
              * à l'autre en ont besoin, et aucun événement ne le redonnera. */
             'actifs' => array(),
+            'inconnu_depuis' => 0,
+            'inconnu_valeur' => '',
+            'repos' => array(),
         );
     }
 
@@ -220,8 +239,19 @@ class vigiliumMoteur {
                 self::changerMode($etat, $config, $_evenement, $t, $decisions);
                 break;
             case 'mode_inconnu':
+                /* Écrit à chaque NOUVELLE valeur inconnue — « Armed » puis
+                 * « Disarmed » sont deux informations —, pas à chaque battement. */
                 $valeur = isset($_evenement['valeur']) ? (string) $_evenement['valeur'] : '';
-                self::defaut($etat, 'mode', true, 'Mode de la centrale inconnu (« ' . $valeur . ' ») : le mode précédent est conservé', $decisions);
+                if ($etat['inconnu_depuis'] <= 0) {
+                    $etat['inconnu_depuis'] = $t;
+                }
+                if ($valeur !== $etat['inconnu_valeur'] || empty($etat['defauts']['mode'])) {
+                    $etat['inconnu_valeur'] = $valeur;
+                    $etat['defauts']['mode'] = true;
+                    $decisions[] = self::decision(self::DECISION_DEFAUT, 'Mode de la centrale inconnu (« ' . $valeur
+                        . ' ») : le mode précédent est conservé ' . (int) (self::INCONNU_MAX / 60) . ' min au plus');
+                }
+                self::tick($etat, $config, $t, $decisions);
                 break;
             case 'capteur':
                 /* Le temps d'abord : un délai d'entrée échu entre deux
@@ -338,7 +368,7 @@ class vigiliumMoteur {
      * s'en effacer.
      */
     private static function oublierRetires(&$_etat, $_config) {
-        foreach (array('muets', 'exclus', 'recents', 'actifs') as $cle) {
+        foreach (array('muets', 'exclus', 'recents', 'actifs', 'repos') as $cle) {
             foreach (array_keys($_etat[$cle]) as $id) {
                 if (!isset($_config['capteurs'][(int) $id])) {
                     unset($_etat[$cle][$id]);
@@ -361,6 +391,8 @@ class vigiliumMoteur {
             $mode = self::MODE_DESARME;
         }
         self::defaut($_etat, 'mode', false, 'Mode de la centrale de nouveau reconnu', $_decisions);
+        $_etat['inconnu_depuis'] = 0;
+        $_etat['inconnu_valeur'] = '';
         $alertes = (isset($_evenement['alertes']) && is_array($_evenement['alertes'])) ? $_evenement['alertes'] : array();
         foreach ($alertes as $id => $alerte) {
             if (isset($_config['capteurs'][(int) $id])) {
@@ -491,7 +523,10 @@ class vigiliumMoteur {
         switch ($_etat['niveau']) {
             case self::NIVEAU_DELAI:
                 $ecart = $_t - (int) (isset($incident['debut']) ? $incident['debut'] : $_t);
-                $detail = 'Désarmé ' . $ecart . ' s après l\'ouverture de ' . self::nom($_config, $origine) . ' : retour normal';
+                $detail = ($ecart <= $_config['delai_entree'] + $_config['annulation'])
+                    ? 'Désarmé ' . $ecart . ' s après l\'ouverture de ' . self::nom($_config, $origine) . ' : retour normal'
+                    : 'Désarmé ' . $ecart . ' s après l\'ouverture de ' . self::nom($_config, $origine)
+                      . ', bien après la fin du délai d\'entrée, que rien n\'a constatée (battement du cron manqué ?)';
                 break;
             case self::NIVEAU_ALARME:
             case self::NIVEAU_CONFIRMEE:
@@ -552,9 +587,16 @@ class vigiliumMoteur {
          * décision par épisode, close au retour au repos : une caméra masquée
          * renvoie la même impulsion tant que dure le masquage. */
         if ($capteur['role'] === self::ROLE_SABOTAGE) {
-            self::defaut($_etat, 'sabotage-' . $_id, $_alerte,
-                $_alerte ? ($actif ? 'Sabotage : ' : 'Sabotage, alarme non armée : ') . $capteur['nom'] : $capteur['nom'] . ' : fin du sabotage',
-                $_decisions, $_id, $actif ? self::DECISION_SABOTAGE : self::DECISION_DEFAUT);
+            if ($_alerte) {
+                unset($_etat['repos'][$_id]);
+                self::defaut($_etat, 'sabotage-' . $_id, true,
+                    ($actif ? 'Sabotage : ' : 'Sabotage, alarme non armée : ') . $capteur['nom'],
+                    $_decisions, $_id, $actif ? self::DECISION_SABOTAGE : self::DECISION_DEFAUT);
+            } elseif (!empty($_etat['defauts']['sabotage-' . $_id]) && !isset($_etat['repos'][$_id])) {
+                /* La fin n'est constatée qu'après REPOS_SABOTAGE de calme, par
+                 * tick() : voir la constante. */
+                $_etat['repos'][$_id] = $_t;
+            }
             return;
         }
 
@@ -721,29 +763,90 @@ class vigiliumMoteur {
                                    'via_delai' => $_viaDelai, 'alarme_t' => $_t);
         $_decisions[] = self::decision(self::DECISION_ALARME,
             ($_viaDelai ? 'Délai d\'entrée écoulé sans désarmement : ' : 'Alarme : ') . self::nom($_config, $origine), $origine);
-        if (count(self::independants($_etat, $_config)) >= 2) {
+        /* Une alarme née de la fin du délai d'entrée n'est PAS confirmée par
+         * ce qui l'a précédée — la caméra qui a vu l'occupant arriver, le
+         * couloir qu'il a traversé pour aller désarmer : c'est le chemin même
+         * de qui rentre, et un désarmement un peu lent ne doit pas devenir une
+         * « alarme confirmée ». Seul un capteur hors du parcours la confirmera
+         * ensuite (voir confirmer()). */
+        if (!$_viaDelai && count(self::independants($_etat, $_config)) >= 2) {
             self::passerConfirmee($_etat, $_config, $_id, $_decisions);
         }
     }
 
     /*
-     * Un capteur parle pendant un incident : s'il est différent de ceux qui ont
-     * déjà parlé, l'incident est confirmé. Deux capteurs distincts, et non le
-     * même deux fois — une porte qui bat n'est pas une confirmation.
+     * Un capteur parle pendant un incident.
+     *
+     *  - pendant le délai d'entrée : noté, il comptera si le délai expire ;
+     *  - dans la fenêtre de confirmation qui suit l'alarme : s'il est
+     *    différent de ceux qui ont déjà parlé, l'alarme est confirmée — deux
+     *    capteurs distincts, et non le même deux fois. Pour une alarme née du
+     *    délai d'entrée, seul un capteur du périmètre confirme ;
+     *  - au-delà de la fenêtre : c'est une NOUVELLE détection, pendant une
+     *    alarme restée sans réponse — une intrusion trois heures après la
+     *    première ne doit pas passer en silence. Elle relance les réactions
+     *    d'alarme et rouvre la fenêtre.
+     *
+     * La centrale ne confirme jamais rien, mais qu'elle déclare l'alarme de
+     * cet incident est écrit : c'est ce qui retient PANIC (« sauf centrale »).
      */
     private static function confirmer(&$_etat, $_config, $_id, $_t, &$_decisions) {
         if (!is_array($_etat['incident'])) {
             return;
         }
-        $deja = isset($_etat['incident']['capteurs'][$_id]);
+        $avant = isset($_etat['incident']['capteurs'][$_id]) ? (int) $_etat['incident']['capteurs'][$_id] : null;
         $_etat['incident']['capteurs'][$_id] = $_t;
-        if ($deja || $_etat['niveau'] === self::NIVEAU_CONFIRMEE) {
+        $role = self::role($_config, $_id);
+        if ($_etat['niveau'] === self::NIVEAU_DELAI) {
+            if ($avant === null) {
+                $_decisions[] = self::decision(self::DECISION_INFO, self::nom($_config, $_id) . ' pendant le délai d\'entrée', $_id);
+            }
             return;
         }
-        if ($_etat['niveau'] === self::NIVEAU_DELAI) {
-            /* Pendant le délai d'entrée, un second capteur ne confirme pas
-             * encore : il sera compté si le délai expire sans désarmement. */
-            $_decisions[] = self::decision(self::DECISION_INFO, self::nom($_config, $_id) . ' pendant le délai d\'entrée', $_id);
+        $debut = isset($_etat['incident']['alarme_t']) ? (int) $_etat['incident']['alarme_t'] : $_t;
+        if ($_t - $debut > $_config['fenetre']) {
+            /* Une caméra ne rouvre pas une alarme : elle voit le chat comme le
+             * voleur, et relancerait sirènes et PANIC à chaque passage. Seul un
+             * capteur de la maison — ouverture, détecteur, centrale — fait une
+             * nouvelle détection. */
+            if ($role === self::ROLE_EXTERIEUR) {
+                /* Écrite pour relire l'incident, une fois par fenêtre. */
+                if ($avant === null || $_t - $avant > $_config['fenetre']) {
+                    $_decisions[] = self::decision(self::DECISION_INFO, self::nom($_config, $_id) . ' pendant l\'alarme (non comptée)', $_id);
+                }
+                return;
+            }
+            if ($avant === null || $_t - $avant > $_config['fenetre']) {
+                $_etat['incident']['alarme_t'] = $_t;
+                $_etat['incident']['via_delai'] = false;
+                $decision = self::decision(self::DECISION_ALARME, 'Nouvelle détection pendant l\'alarme : ' . self::nom($_config, $_id), $_id);
+                $decision['nouvelle'] = true;
+                $_decisions[] = $decision;
+            }
+            return;
+        }
+        if ($role === self::ROLE_CENTRALE) {
+            if ($avant === null) {
+                $_decisions[] = self::decision(self::DECISION_INFO, 'La centrale déclare aussi l\'alarme : ' . self::nom($_config, $_id), $_id);
+            }
+            return;
+        }
+        if ($avant !== null || $_etat['niveau'] === self::NIVEAU_CONFIRMEE) {
+            return;
+        }
+        /* Alarme née du délai d'entrée : ce qui a parlé AVANT son expiration
+         * est déjà dans l'incident ($avant non nul, écarté plus haut). Après,
+         * un capteur du périmètre confirme tout de suite ; un détecteur ou une
+         * caméra seulement s'il parle CONFIRMATION_APRES_DELAI secondes après —
+         * le temps où l'occupant en retard est encore sur le chemin du
+         * clavier. Avant ce temps, il est écrit sans compter. */
+        if (!empty($_etat['incident']['via_delai']) && $role !== self::ROLE_PERIMETRE
+            && ($role === self::ROLE_EXTERIEUR || $_t - $debut < self::CONFIRMATION_APRES_DELAI)) {
+            /* Une caméra ne confirme jamais une alarme née du délai d'entrée :
+             * le chat du jardin la confirmerait dans la fenêtre. */
+            $_decisions[] = self::decision(self::DECISION_INFO, self::nom($_config, $_id)
+                . ($role === self::ROLE_EXTERIEUR ? ' après une alarme née du délai d\'entrée' : ' juste après la fin du délai d\'entrée')
+                . ' : non compté comme confirmation', $_id);
             return;
         }
         if (count(self::independants($_etat, $_config)) >= 2) {
@@ -766,6 +869,21 @@ class vigiliumMoteur {
      * suspicion restée seule.
      */
     private static function tick(&$_etat, $_config, $_t, &$_decisions) {
+        foreach ($_etat['repos'] as $id => $depuis) {
+            if ($_t - (int) $depuis >= self::REPOS_SABOTAGE || $_t < (int) $depuis) {
+                unset($_etat['repos'][$id]);
+                self::defaut($_etat, 'sabotage-' . $id, false, self::nom($_config, (int) $id) . ' : fin du sabotage', $_decisions, (int) $id);
+            }
+        }
+        if ($_etat['inconnu_depuis'] > 0 && $_t - $_etat['inconnu_depuis'] >= self::INCONNU_MAX && self::estArme($_etat['mode'])) {
+            /* Une décision de SABOTAGE, et non un simple défaut : Vigilium cesse
+             * de surveiller, et cela doit se voir comme une alerte. */
+            $_decisions[] = self::decision(self::DECISION_SABOTAGE, 'Mode de la centrale inconnu depuis ' . (int) (self::INCONNU_MAX / 60)
+                . ' min (« ' . $_etat['inconnu_valeur'] . ' ») : Vigilium ne surveille plus, alarme considérée désarmée. Renseignez ce libellé dans la configuration.');
+            $_etat['mode'] = self::MODE_DESARME;
+            self::desarmer($_etat, $_config, $_t, $_decisions);
+            return;
+        }
         if (!self::estArme($_etat['mode'])) {
             return;
         }

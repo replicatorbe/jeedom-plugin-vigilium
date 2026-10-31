@@ -1,5 +1,24 @@
 # Changelog Vigilium
 
+## 0.5 — relecture d'ensemble
+
+- Nouvelle détection pendant une alarme restée sans réponse : réactions et
+  sirènes repartent (elle passait en silence).
+- Confirmation limitée à la fenêtre ; une alarme née du délai d'entrée n'est
+  confirmée que par un capteur du périmètre.
+- Mode de centrale inconnu : désarmé après 10 minutes, défaut à chaque
+  nouvelle valeur.
+- « Sauf centrale » retient PANIC même quand la centrale parle après le
+  contact.
+- Sabotage par impulsions : un épisode, une sirène par armement ; une sirène
+  de sabotage repart pour une intrusion ; horloge qui recule sans effet sur
+  la durée des sirènes.
+- Désactiver le plugin n'efface plus le journal ; un verrou au mauvais
+  propriétaire ne rend plus l'alarme muette (message au centre de messages
+  si l'état ne peut être écrit) ; suppression concurrente sans sirène
+  orpheline ; test de sirène revérifié sous verrou ; battement qui ne
+  retient plus le cron des autres plugins.
+
 ## 0.4.1 — capteurs Shelly BLU
 
 - Documentation : brancher un contact Shelly BLU (chiffrement BTHome dans

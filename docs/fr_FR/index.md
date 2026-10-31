@@ -18,7 +18,18 @@ doit réagir.
 - **Deux capteurs distincts valent mieux qu'un.** Une alarme est « confirmée »
   quand un second capteur, différent du premier, se déclenche dans la fenêtre
   de confirmation — par exemple une caméra qui a vu quelqu'un, puis une
-  fenêtre qui s'ouvre.
+  fenêtre qui s'ouvre. Une alarme née de la fin du délai d'entrée n'est
+  confirmée que par un capteur du périmètre : la caméra qui a vu arriver et le
+  couloir traversé pour aller désarmer sont le chemin même de qui rentre.
+- **Une alarme sans réponse reste vigilante.** Un capteur de la maison
+  (ouverture, détecteur, centrale) qui se déclenche au-delà de la fenêtre de
+  confirmation, pendant une alarme non acquittée, est une **nouvelle
+  détection** : les réactions d'alarme repartent, et les sirènes arrivées au
+  bout de leur durée aussi, une fois par heure au plus. Une caméra ne rouvre
+  jamais une alarme : elle voit le chat comme le voleur.
+- Après une alarme née du délai d'entrée, un détecteur intérieur ne confirme
+  que s'il parle au moins 30 s après la fin du délai, et une caméra ne
+  confirme jamais ; ce qui ne compte pas est écrit au journal.
 
 ## Configuration de l'alarme
 
@@ -162,18 +173,23 @@ retarder : les sirènes ont leur propre réglage, dans l'onglet Réactions.
 | Alarme / Confirmée / Sabotage | Les niveaux qui la mettent en marche. Sabotage : seulement pour un capteur de rôle Sabotage, alarme armée — pas pour un capteur muet ni un « Armé malgré ». |
 | Sauf centrale | Pas quand la centrale a déclaré l'alarme de cet incident, même si la décision suivante vient d'un autre capteur ; un retard en cours est annulé quand elle la déclare. C'est le réglage d'une action PANIC envoyée à la centrale. |
 
-Une sirène sonne une fois par incident : arrivée au bout de sa durée, elle ne
-repart pas tant que l'incident n'est pas terminé (désarmement, acquittement) —
-une alarme laissée sans réponse pendant des heures ne refait pas sonner les
-sirènes à une nouvelle détection.
+Une sirène sonne une fois par détection : arrivée au bout de sa durée, elle ne
+repart pas pour une confirmation, mais repart pour une **nouvelle détection**
+(au-delà de la fenêtre de confirmation) pendant une alarme restée sans
+réponse (une fois par heure au plus). Une sirène de sabotage sonne une fois
+par armement — un brouillage après une caméra masquée, dans le même armement,
+ne la refait pas sonner ; déjà en marche
+pour un sabotage quand une intrusion survient, sa durée repart pour
+l'intrusion.
 
 L'arrêt utilise la commande enregistrée à la mise en marche : retirer ou
 modifier une sirène pendant qu'elle sonne n'envoie pas l'arrêt à une autre.
 Une sirène réellement mise en marche est arrêtée pour de vrai même si
 l'alarme est repassée en observation entre-temps.
 
-Les retards et les durées sont constatés par le battement du cron, à la
-minute près : un retard de 10 s peut devenir une minute. Si Jeedom s'arrête,
+Les retards et les durées sont constatés par le battement du cron : un
+retard ou une durée peut être prolongé jusqu'à une minute (et un peu plus si
+le cron de Jeedom est chargé). Si Jeedom s'arrête,
 plus rien n'arrête la sirène : réglez aussi une durée de coupure sur
 l'appareil (durée de sirène de la caméra, extinction automatique du relais).
 
@@ -208,9 +224,20 @@ signal verra alors Jeedom comme arrêté.
 Les commandes « Niveau » et « Dernier événement » sont de vraies
 informations : un scénario branché dessus agit, même pendant l'observation.
 
-Une valeur de mode qui reste inconnue garde indéfiniment le dernier mode connu
-(un seul défaut est écrit) : si la centrale publie un libellé nouveau, le
-renseigner dans le champ correspondant.
+Une valeur de mode inconnue garde le dernier mode connu **10 minutes au plus**
+(un défaut est écrit pour chaque nouvelle valeur) ; au-delà, l'alarme est
+considérée désarmée et une décision de **sabotage** le signale — une centrale dont le libellé a changé ne doit pas
+laisser Vigilium armé pendant que la maison est désarmée. Renseignez le
+nouveau libellé dans le champ correspondant.
+
+Un capteur déjà en alerte **avant** l'armement est exclu ; c'est une porte
+ouverte **après** l'armement, pendant le délai de sortie, qui lance le délai
+d'entrée si elle est encore ouverte à la fin de ce délai. Après un
+acquittement, un capteur resté en alerte ne sera de nouveau évalué qu'après
+être revenu au repos.
+
+Un sabotage par impulsions (caméra masquée) ne forme qu'un épisode : sa fin
+n'est constatée qu'après 2 minutes de calme.
 
 ## Journal
 
